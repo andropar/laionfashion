@@ -52,6 +52,31 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Legacy: require a person hint even for context-term matches.",
     )
+    # Image-side CLIP filtering
+    parser.add_argument(
+        "--use-image-clip-filter",
+        action="store_true",
+        default=False,
+        help="Score images with CLIP against outfit/product prompts and reject below threshold.",
+    )
+    parser.add_argument(
+        "--min-image-outfit-score",
+        type=float,
+        default=0.0,
+        help="Minimum CLIP outfit score to accept an image (default: 0.0).",
+    )
+    parser.add_argument(
+        "--clip-model-name",
+        type=str,
+        default="ViT-B-32",
+        help="Open CLIP model name for image scoring (default: ViT-B-32).",
+    )
+    parser.add_argument(
+        "--clip-pretrained",
+        type=str,
+        default="openai",
+        help="Open CLIP pretrained weights name (default: openai).",
+    )
     return parser.parse_args()
 
 
@@ -59,6 +84,17 @@ def main() -> None:
     args = parse_args()
     paths = load_data_paths()
     out_dir = make_output_dir(__file__, paths.output_root)
+
+    # Set up optional image scorer
+    image_scorer = None
+    if args.use_image_clip_filter:
+        from laionfashion.image_scoring import CLIPOutfitScorer
+        print(f"Loading CLIP model: {args.clip_model_name}/{args.clip_pretrained}")
+        image_scorer = CLIPOutfitScorer(
+            model_name=args.clip_model_name,
+            pretrained=args.clip_pretrained,
+        )
+        print(f"CLIP outfit scorer ready, min_image_outfit_score={args.min_image_outfit_score}")
 
     index = NaturalSubsetIndex.from_paths(paths)
     rng = np.random.default_rng(args.seed)
@@ -72,6 +108,8 @@ def main() -> None:
         require_person_context=args.require_person_context,
         selection_mode=args.selection_mode,
         min_score=args.min_filter_score,
+        image_scorer=image_scorer,
+        min_image_score=args.min_image_outfit_score,
     )
     if records.empty:
         raise RuntimeError(
@@ -114,6 +152,13 @@ def main() -> None:
             "No person detector, NSFW detector, or minor filter has been applied yet.",
         ],
     }
+    if args.use_image_clip_filter:
+        manifest["image_clip_filter"] = {
+            "model": args.clip_model_name,
+            "pretrained": args.clip_pretrained,
+            "min_image_outfit_score": args.min_image_outfit_score,
+        }
+
     with (out_dir / "manifest.json").open("w") as f:
         json.dump(manifest, f, indent=2)
 

@@ -12,6 +12,7 @@ from tqdm.auto import tqdm
 
 from laionfashion.data_access import LaionTarReader, NaturalSubsetIndex, open_feature_memmap
 from laionfashion.filtering import SELECTION_MODES, RejectReason, filter_caption, score_caption
+from laionfashion.image_scoring import ImageScorer
 
 
 def write_thumbnail(image: Image.Image, path: Path, max_size: int) -> None:
@@ -41,6 +42,11 @@ class FilterDiagnostics:
     # Score distribution tracking
     accepted_scores: list[float] = field(default_factory=list)
     selection_mode: str | None = None
+
+    # Image-side scoring
+    image_scored: int = 0
+    image_rejected: int = 0
+    image_scores: list[float] = field(default_factory=list)
 
     def record_reject(self, reason: RejectReason, caption: str, matched_term: str | None = None) -> None:
         key = reason.value
@@ -83,6 +89,18 @@ class FilterDiagnostics:
                 "mean": round(sum(scores) / len(scores), 2),
                 "count": len(scores),
             }
+        if self.image_scored > 0:
+            d["image_scoring"] = {
+                "scored": self.image_scored,
+                "rejected": self.image_rejected,
+                "accepted": self.image_scored - self.image_rejected,
+            }
+            if self.image_scores:
+                d["image_scoring"]["score_distribution"] = {
+                    "min": round(min(self.image_scores), 4),
+                    "max": round(max(self.image_scores), 4),
+                    "mean": round(sum(self.image_scores) / len(self.image_scores), 4),
+                }
         return d
 
     def write_review_artifacts(self, out_dir: Path) -> dict[str, str]:
@@ -137,6 +155,8 @@ def collect_caption_filtered_subset(
     require_person_context: bool = False,
     selection_mode: str | None = None,
     min_score: float | None = None,
+    image_scorer: ImageScorer | None = None,
+    min_image_score: float = 0.0,
 ) -> tuple[pd.DataFrame, FilterDiagnostics]:
     """Collect a caption-filtered subset.  Returns ``(records, diagnostics)``.
 
@@ -147,6 +167,12 @@ def collect_caption_filtered_subset(
         from :data:`SELECTION_MODES`.  Overrides *require_person_context*.
     min_score:
         Explicit score threshold.  Overrides *selection_mode* if both are set.
+    image_scorer:
+        Optional image-side scorer (e.g. CLIPOutfitScorer).  When provided,
+        images that pass caption filtering are additionally scored and rejected
+        if below *min_image_score*.
+    min_image_score:
+        Minimum image score to accept.  Only used when *image_scorer* is set.
     """
     thumbnail_dir.mkdir(parents=True, exist_ok=True)
     records: list[dict] = []
@@ -210,6 +236,25 @@ def collect_caption_filtered_subset(
                         diag.image_errors += 1
                         continue
 
+                    # Optional image-side scoring
+                    img_score: float | None = None
+                    if image_scorer is not None:
+                        try:
+                            img_score = image_scorer.score_image(image)
+                        except Exception:
+                            diag.image_errors += 1
+                            continue
+                        diag.image_scored += 1
+                        diag.image_scores.append(img_score)
+                        if img_score < min_image_score:
+                            diag.image_rejected += 1
+                            diag.record_reject(
+                                RejectReason.BELOW_SCORE_THRESHOLD,
+                                caption,
+                                f"image_score={img_score:.4f}<{min_image_score}",
+                            )
+                            continue
+
                     diag.record_accept(caption, result.matched_term, score=caption_score)
                     thumb_name = f"{len(records):06d}_{global_index}.jpg"
                     write_thumbnail(image, thumbnail_dir / thumb_name, thumbnail_size)
@@ -227,6 +272,7 @@ def collect_caption_filtered_subset(
                             "original_height": metadata.get("original_height"),
                             "sha256": metadata.get("sha256", ""),
                             "thumbnail_path": str(Path("thumbnails") / thumb_name),
+                            **({"image_outfit_score": round(img_score, 4)} if img_score is not None else {}),
                         }
                     )
 
