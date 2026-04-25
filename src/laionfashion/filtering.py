@@ -6,12 +6,12 @@ from industrial, product-only, or irrelevant contexts.
 
 The filter uses a two-tier approach:
 
-1. **Context terms** (e.g. "outfit", "wearing", "fashion") strongly imply a
-   person-in-clothing context on their own.
+1. **Context terms** (e.g. "outfit", "wearing", "street style") strongly imply
+   a person-in-clothing context on their own.
 2. **Garment terms** (e.g. "jacket", "coat", "dress") are ambiguous — they
    appear in product listings, industrial docs, and non-fashion contexts.
    A garment term only counts if the caption also contains a **person hint**
-   (e.g. "woman", "man", "person", "model", "style").
+   (e.g. "woman", "man", "model", "wearing").
 
 Both tiers are gated by an exclusion list that rejects industrial, medical,
 product-only, and other non-fashion contexts.
@@ -47,9 +47,11 @@ class FilterResult:
 # ---------------------------------------------------------------------------
 
 # Context terms: strongly imply person + clothing on their own.
+# Note: bare "fashion" is intentionally excluded — it matches product names
+# ("Fashion Heart Necklace"), decor, and jewelry organizers.  Only compound
+# forms that imply a person/outfit context are kept.
 CONTEXT_TERMS = (
     "outfit",
-    "fashion",
     "street style",
     "streetwear",
     "wearing",
@@ -58,7 +60,15 @@ CONTEXT_TERMS = (
     "ootd",
     "lookbook",
     "fashion week",
+    "fashion show",
+    "fashion photo",
+    "fashion blog",
+    "fashion model",
+    "fashion style",
+    "fashion look",
+    "street fashion",
     "style outfit",
+    "runway",
 )
 
 # Garment terms: only count when a person hint is also present.
@@ -95,30 +105,23 @@ GARMENT_TERMS = (
 
 # Person hints: at least one must appear alongside a garment term.
 PERSON_HINTS = (
-    "person",
-    "people",
     "woman",
     "women",
-    "man ",  # trailing space to avoid "manual", "many", etc.
+    "man ",  # trailing space to avoid "manual", "many", "mannequin", etc.
     "men ",
     "lady",
     "girl",
     "boy",
     "model",
-    "style",
     "stylish",
     "posing",
     "portrait",
-    "photo of",
-    "picture of",
-    "image of",
     "wearing",
     "wears",
     "wore",
     "dressed",
     "casual",
     "elegant",
-    "formal",
     "chic",
 )
 
@@ -196,7 +199,7 @@ EXCLUSION_TERMS = (
     "specimen",
     "microscope",
     "laboratory",
-    # Medical
+    # Medical / hospital
     "surgical",
     "medical",
     "clinical",
@@ -207,11 +210,49 @@ EXCLUSION_TERMS = (
     "prosthetic",
     "orthopedic",
     "pharmaceutical",
+    "hospital",
+    "nurse",
+    "doctor",
+    "surgery",
+    "icu",
+    "emergency room",
+    "ambulance",
     # Product-only / e-commerce without person
     "white background isolated",
     "product photo on white",
     "flat lay",
     "mannequin",
+    # Jewelry / accessories without clothing context
+    "necklace",
+    "bracelet",
+    "earring",
+    "pendant",
+    "brooch",
+    "anklet",
+    "jewelry",
+    "jewellery",
+    # Home decor / supplies / furniture
+    "decoration",
+    "decor",
+    "supplies",
+    "ornament",
+    "centerpiece",
+    "dining table",
+    "christmas decoration",
+    "furniture",
+    "upholstery",
+    "curtain",
+    "mattress",
+    "sofa",
+    "couch",
+    "organizer",
+    "storage",
+    "shelf",
+    "cabinet",
+    "pillow",
+    "cushion",
+    "tablecloth",
+    "placemat",
     # Automotive / mechanical
     "engine",
     "motor",
@@ -229,13 +270,87 @@ EXCLUSION_TERMS = (
     "baking",
     "cooking",
     "roast",
-    # Furniture / home
-    "furniture",
-    "upholstery",
-    "curtain",
-    "mattress",
-    "sofa",
-    "couch",
+    # News / events / politics / protest
+    "protest",
+    "protester",
+    "demonstrat",  # demonstration, demonstrators
+    "rally",
+    "riot",
+    "police",
+    "officer",
+    "arrested",
+    "arrest",
+    "injured",
+    "injur",  # injuries
+    "casualt",  # casualty, casualties
+    "shooting",
+    "bombing",
+    "explosion",
+    "fire department",
+    "firefight",
+    "rescue",
+    "disaster",
+    "flood",
+    "earthquake",
+    "hurricane",
+    "tornado",
+    "wildfire",
+    "evacuat",  # evacuation, evacuated
+    "election",
+    "politician",
+    "president",
+    "senator",
+    "congress",
+    "parliament",
+    "campaign",
+    "democrat",
+    "republican",
+    "obama",
+    "trump",
+    "biden",
+    "vote",
+    "voter",
+    "ballot",
+    "televisi",  # television
+    "broadcast",
+    "newscast",
+    "reporter",
+    "journalist",
+    "press conference",
+    "courtroom",
+    "verdict",
+    "trial",
+    "lawsuit",
+    "inmate",
+    "prison",
+    "jail",
+    "refugee",
+    "migrant",
+    "military",
+    "soldier",
+    "troop",
+    "combat",
+    "warfare",
+    "weapon",
+    "tank ",
+    "missile",
+    "grenade",
+    # Sports (non-fashion)
+    "soccer",
+    "football",
+    "basketball",
+    "baseball",
+    "hockey",
+    "tennis",
+    "cricket",
+    "rugby",
+    "wrestling",
+    "boxing",
+    "stadium",
+    "goalkeeper",
+    "touchdown",
+    "championship",
+    "tournament",
     # Animals
     "dog ",
     "cat ",

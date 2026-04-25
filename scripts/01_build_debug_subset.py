@@ -67,6 +67,8 @@ def main() -> None:
         index=index,
     )
 
+    review_artifacts = filter_diag.write_review_artifacts(out_dir)
+
     manifest = {
         "n_requested": int(args.n_images),
         "n_exported": int(len(records)),
@@ -74,6 +76,7 @@ def main() -> None:
         "seed": int(args.seed),
         "feature": embedding_info,
         "filter_diagnostics": filter_diag.to_dict(),
+        "review_artifacts": review_artifacts,
         "records_path": str(records_path),
         "thumbnail_dir": str(out_dir / "thumbnails"),
         "data_paths": {

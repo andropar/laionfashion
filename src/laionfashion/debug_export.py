@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,6 +20,10 @@ def write_thumbnail(image: Image.Image, path: Path, max_size: int) -> None:
     thumb.save(path, quality=90)
 
 
+# Maximum caption samples to keep per reject reason (keeps output small).
+MAX_SAMPLES_PER_REASON = 100
+
+
 @dataclass
 class FilterDiagnostics:
     """Summary of caption filtering during subset collection."""
@@ -28,9 +34,27 @@ class FilterDiagnostics:
     image_errors: int = 0
     reject_counts: dict[str, int] = field(default_factory=dict)
 
-    def record_reject(self, reason: RejectReason) -> None:
+    # Caption samples for review artifacts
+    accepted_samples: list[dict] = field(default_factory=list)
+    rejected_samples: dict[str, list[dict]] = field(default_factory=dict)
+
+    def record_reject(self, reason: RejectReason, caption: str, matched_term: str | None = None) -> None:
         key = reason.value
         self.reject_counts[key] = self.reject_counts.get(key, 0) + 1
+        samples = self.rejected_samples.setdefault(key, [])
+        if len(samples) < MAX_SAMPLES_PER_REASON:
+            entry = {"caption": caption, "reason": key}
+            if matched_term:
+                entry["matched_term"] = matched_term
+            samples.append(entry)
+
+    def record_accept(self, caption: str, matched_term: str | None = None) -> None:
+        self.accepted += 1
+        if len(self.accepted_samples) < MAX_SAMPLES_PER_REASON:
+            entry = {"caption": caption}
+            if matched_term:
+                entry["matched_term"] = matched_term
+            self.accepted_samples.append(entry)
 
     def to_dict(self) -> dict:
         return {
@@ -41,6 +65,46 @@ class FilterDiagnostics:
             "reject_counts": dict(sorted(self.reject_counts.items())),
             "accept_rate": round(self.accepted / max(self.scanned, 1), 4),
         }
+
+    def write_review_artifacts(self, out_dir: Path) -> dict[str, str]:
+        """Write accepted/rejected caption samples to *out_dir*.
+
+        Returns a dict of artifact names to file paths (relative to out_dir).
+        """
+        artifacts: dict[str, str] = {}
+
+        # Accepted captions
+        if self.accepted_samples:
+            path = out_dir / "accepted_captions.csv"
+            _write_dicts_csv(path, self.accepted_samples, ["caption", "matched_term"])
+            artifacts["accepted_captions"] = path.name
+
+        # Rejected captions (one file, all reasons)
+        all_rejected = []
+        for samples in self.rejected_samples.values():
+            all_rejected.extend(samples)
+        if all_rejected:
+            path = out_dir / "rejected_captions.csv"
+            _write_dicts_csv(path, all_rejected, ["caption", "reason", "matched_term"])
+            artifacts["rejected_captions"] = path.name
+
+        # Summary JSON
+        summary = self.to_dict()
+        summary["accepted_sample_count"] = len(self.accepted_samples)
+        summary["rejected_sample_count"] = len(all_rejected)
+        path = out_dir / "filter_summary.json"
+        with path.open("w") as f:
+            json.dump(summary, f, indent=2)
+        artifacts["filter_summary"] = path.name
+
+        return artifacts
+
+
+def _write_dicts_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def collect_caption_filtered_subset(
@@ -86,7 +150,7 @@ def collect_caption_filtered_subset(
                     caption = metadata.get("caption", "")
                     result = filter_caption(caption)
                     if result.rejected:
-                        diag.record_reject(result.reason)
+                        diag.record_reject(result.reason, caption, result.matched_term)
                         continue
 
                     try:
@@ -95,7 +159,7 @@ def collect_caption_filtered_subset(
                         diag.image_errors += 1
                         continue
 
-                    diag.accepted += 1
+                    diag.record_accept(caption, result.matched_term)
                     thumb_name = f"{len(records):06d}_{global_index}.jpg"
                     write_thumbnail(image, thumbnail_dir / thumb_name, thumbnail_size)
                     records.append(
@@ -137,4 +201,3 @@ def export_embeddings(
         "shape": [int(v) for v in embedding.shape],
         "dtype": str(embedding.dtype),
     }
-

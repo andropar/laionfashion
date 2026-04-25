@@ -54,7 +54,7 @@ class TestKnownFalsePositives:
     @pytest.mark.parametrize(
         "caption",
         [
-            # Industrial / chemical
+            # Industrial / chemical (round 1)
             "conformal coating on circuit board jacket",
             "conformal coat applied to PCB assembly",
             "seizure jacket for pipe insulation",
@@ -79,7 +79,33 @@ class TestKnownFalsePositives:
             "cat dress up costume for pet",
         ],
     )
-    def test_rejects_known_false_positives(self, caption: str) -> None:
+    def test_rejects_round1_false_positives(self, caption: str) -> None:
+        result = filter_caption(caption)
+        assert result.rejected, f"Should reject: {caption!r}"
+
+    @pytest.mark.parametrize(
+        "caption",
+        [
+            # Exact Raven false positives (round 2)
+            "Fashion Christmas Decoration Supplies For Dining Table",
+            "A man watches a television showing Barack Obama giving a speech",
+            "Masked and gowned person checking person in hospital bed",
+            "Dozens of people, mostly police, were injured in the protest",
+            "Fashion Heart Necklace",
+            "InterDesign Classico Hanging Fashion for Jewelry Organizer",
+            # Related patterns
+            "Fashion bracelet gold plated pendant",
+            "Fashion earring set for women accessories",
+            "Fashion decor pillow cushion cover",
+            "People arrested during protest rally downtown",
+            "Person rescued from fire by firefighters",
+            "Man watching football game on television at stadium",
+            "Woman in hospital gown after surgery",
+            "Soccer player wearing jersey and shorts",
+            "Military soldier wearing combat boots",
+        ],
+    )
+    def test_rejects_round2_false_positives(self, caption: str) -> None:
         result = filter_caption(caption)
         assert result.rejected, f"Should reject: {caption!r}"
 
@@ -182,7 +208,7 @@ class TestFilterResult:
         assert result.matched_term is not None
 
     def test_no_signal_reason(self) -> None:
-        result = filter_caption("Blue thing on a shelf")
+        result = filter_caption("A blue thing sitting on a bench")
         assert result.reason == RejectReason.NO_FASHION_SIGNAL
 
 
