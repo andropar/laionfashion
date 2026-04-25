@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
@@ -12,15 +12,30 @@ import pandas as pd
 
 @dataclass
 class DebugBundle:
-    """A loaded debug bundle: records table, embeddings matrix, and bundle path."""
+    """A loaded debug bundle: records table, embeddings matrix, and bundle path.
+
+    Optionally includes garment-level data (``garments`` DataFrame and
+    ``garment_embeddings`` matrix) if the bundle has been processed by
+    ``06_extract_garments.py``.
+    """
 
     records: pd.DataFrame
     embeddings: np.ndarray
     bundle_dir: Path
+    garments: pd.DataFrame | None = field(default=None, repr=False)
+    garment_embeddings: np.ndarray | None = field(default=None, repr=False)
 
     @property
     def n_images(self) -> int:
         return len(self.records)
+
+    @property
+    def has_garments(self) -> bool:
+        return self.garments is not None and len(self.garments) > 0
+
+    @property
+    def n_garments(self) -> int:
+        return len(self.garments) if self.garments is not None else 0
 
     def thumbnail_path(self, row_id: int) -> Path | None:
         """Return the absolute thumbnail path for a given row_id."""
@@ -29,6 +44,25 @@ class DebugBundle:
             return None
         path = self.bundle_dir / rel
         return path if path.exists() else None
+
+    def garment_crop_path(self, garment_id: int) -> Path | None:
+        """Return the absolute crop path for a given garment_id."""
+        if self.garments is None:
+            return None
+        row = self.garments.loc[self.garments["garment_id"] == garment_id]
+        if row.empty:
+            return None
+        rel = row.iloc[0]["crop_path"]
+        if pd.isna(rel):
+            return None
+        path = self.bundle_dir / rel
+        return path if path.exists() else None
+
+    def garments_for_outfit(self, outfit_id: int) -> pd.DataFrame:
+        """Return garment rows for a given outfit_id."""
+        if self.garments is None:
+            return pd.DataFrame()
+        return self.garments[self.garments["outfit_id"] == outfit_id]
 
 
 def load_bundle(bundle_dir: str | Path) -> DebugBundle:
@@ -65,7 +99,27 @@ def load_bundle(bundle_dir: str | Path) -> DebugBundle:
             f"{embeddings.shape[0]} embeddings"
         )
 
-    return DebugBundle(records=records, embeddings=embeddings, bundle_dir=bundle_dir)
+    # Optionally load garment data
+    garments = None
+    garment_embeddings = None
+    garments_parquet = bundle_dir / "garments.parquet"
+    garments_csv = bundle_dir / "garments.csv"
+    if garments_parquet.exists():
+        garments = pd.read_parquet(garments_parquet)
+    elif garments_csv.exists():
+        garments = pd.read_csv(garments_csv)
+
+    garment_emb_path = bundle_dir / "garment_embeddings.npy"
+    if garment_emb_path.exists():
+        garment_embeddings = np.load(garment_emb_path).astype(np.float32)
+
+    return DebugBundle(
+        records=records,
+        embeddings=embeddings,
+        bundle_dir=bundle_dir,
+        garments=garments,
+        garment_embeddings=garment_embeddings,
+    )
 
 
 def nearest_neighbors(
