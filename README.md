@@ -6,6 +6,8 @@ The goal is to develop code locally, push to GitHub, then pull on Raven and run 
 
 ## Repository Workflow
 
+Future coding agents should start by reading `docs/agent_handoff.md` for the project intent, safety boundaries, MVP milestones, and Raven/local collaboration protocol.
+
 Local development:
 
 ```bash

@@ -2,6 +2,8 @@
 
 Use this repo as the source of truth for code. Treat Raven as the data/compute runner.
 
+Before changing scope or architecture, read `docs/agent_handoff.md`. It captures the project intent, non-goals, safety boundaries, and MVP sequence.
+
 ## Local Loop
 
 1. Edit locally with normal Python tooling.
