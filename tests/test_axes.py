@@ -1,4 +1,4 @@
-"""Tests for laionfashion.axes – load, save, validate, and demo axis builder."""
+"""Tests for laionfashion.axes – load, save, validate, demo axes, and CLIP axes."""
 
 from __future__ import annotations
 
@@ -9,10 +9,15 @@ import pandas as pd
 import pytest
 
 from laionfashion.axes import (
+    DEFAULT_PROMPT_AXES,
+    PromptAxis,
     axis_names,
+    build_clip_axes,
     build_demo_axes,
+    compute_prompt_directions,
     load_axis_scores,
     save_axis_scores,
+    score_embeddings_on_axes,
     top_bottom_indices,
     validate_axis_scores,
 )
@@ -202,3 +207,159 @@ class TestBuildDemoAxes:
         records = pd.DataFrame({"row_id": range(5), "thumbnail_path": [""] * 5})
         scores = build_demo_axes(emb, records)
         assert len(scores) == 5
+
+
+# ---------------------------------------------------------------------------
+# Prompt-direction axes (CLIP axes with synthetic embeddings)
+# ---------------------------------------------------------------------------
+
+
+def _make_synthetic_text_embeddings(
+    axes: list[PromptAxis], dim: int = 32
+) -> dict[str, np.ndarray]:
+    """Create synthetic text embeddings for testing (no CLIP needed)."""
+    rng = np.random.default_rng(42)
+    embeddings = {}
+    for ax in axes:
+        pos = rng.standard_normal(dim).astype(np.float32)
+        pos /= np.linalg.norm(pos)
+        neg = rng.standard_normal(dim).astype(np.float32)
+        neg /= np.linalg.norm(neg)
+        embeddings[ax.positive] = pos
+        embeddings[ax.negative] = neg
+    return embeddings
+
+
+class TestPromptAxis:
+    def test_dataclass_fields(self) -> None:
+        ax = PromptAxis(name="test", positive="good", negative="bad")
+        assert ax.name == "test"
+        assert ax.positive == "good"
+        assert ax.negative == "bad"
+
+    def test_default_axes_exist(self) -> None:
+        assert len(DEFAULT_PROMPT_AXES) >= 6
+        names = [ax.name for ax in DEFAULT_PROMPT_AXES]
+        assert "minimalist_vs_maximalist" in names
+        assert "formal_vs_casual" in names
+        assert "colorful_vs_neutral" in names
+
+
+class TestComputePromptDirections:
+    def test_direction_is_normalized(self) -> None:
+        axes = [PromptAxis("test", "pos prompt", "neg prompt")]
+        text_emb = {
+            "pos prompt": np.array([1.0, 0.0, 0.0], dtype=np.float32),
+            "neg prompt": np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        }
+        directions = compute_prompt_directions(axes, text_emb)
+        d = directions["test"]
+        assert abs(np.linalg.norm(d) - 1.0) < 1e-5
+
+    def test_direction_points_toward_positive(self) -> None:
+        axes = [PromptAxis("test", "pos prompt", "neg prompt")]
+        pos = np.array([1.0, 0.0], dtype=np.float32)
+        neg = np.array([-1.0, 0.0], dtype=np.float32)
+        text_emb = {"pos prompt": pos, "neg prompt": neg}
+        directions = compute_prompt_directions(axes, text_emb)
+        # Direction should point toward positive (x > 0)
+        assert directions["test"][0] > 0
+
+    def test_multiple_axes(self) -> None:
+        axes = [
+            PromptAxis("a", "pos_a", "neg_a"),
+            PromptAxis("b", "pos_b", "neg_b"),
+        ]
+        text_emb = _make_synthetic_text_embeddings(axes, dim=16)
+        directions = compute_prompt_directions(axes, text_emb)
+        assert "a" in directions
+        assert "b" in directions
+        assert directions["a"].shape == (16,)
+
+
+class TestScoreEmbeddingsOnAxes:
+    def test_output_shape(self) -> None:
+        emb = _random_embeddings(10, d=8)
+        directions = {
+            "axis_a": np.random.default_rng(0).standard_normal(8).astype(np.float32),
+            "axis_b": np.random.default_rng(1).standard_normal(8).astype(np.float32),
+        }
+        scores = score_embeddings_on_axes(emb, directions)
+        assert len(scores) == 10
+        assert list(scores.columns) == ["row_id", "axis_a", "axis_b"]
+
+    def test_aligned_image_scores_high(self) -> None:
+        """An image aligned with the direction should score higher."""
+        direction = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        emb = np.array(
+            [
+                [1.0, 0.0, 0.0, 0.0],   # aligned with direction
+                [-1.0, 0.0, 0.0, 0.0],  # opposite to direction
+                [0.0, 1.0, 0.0, 0.0],   # orthogonal
+            ],
+            dtype=np.float32,
+        )
+        scores = score_embeddings_on_axes(emb, {"test_axis": direction})
+        vals = scores["test_axis"].values
+        assert vals[0] > vals[2] > vals[1]  # aligned > orthogonal > opposite
+
+
+class TestBuildClipAxes:
+    def test_full_pipeline_with_synthetic(self) -> None:
+        """End-to-end with synthetic embeddings (no CLIP)."""
+        axes = list(DEFAULT_PROMPT_AXES[:3])
+        text_emb = _make_synthetic_text_embeddings(axes, dim=32)
+        image_emb = _random_embeddings(20, d=32)
+
+        scores = build_clip_axes(
+            image_embeddings=image_emb,
+            text_embeddings=text_emb,
+            axes=axes,
+        )
+        assert len(scores) == 20
+        assert "row_id" in scores.columns
+        names = axis_names(scores)
+        assert len(names) == 3
+        assert names[0] == axes[0].name
+
+    def test_validates_successfully(self) -> None:
+        axes = list(DEFAULT_PROMPT_AXES[:2])
+        text_emb = _make_synthetic_text_embeddings(axes, dim=16)
+        image_emb = _random_embeddings(10, d=16)
+        scores = build_clip_axes(
+            image_embeddings=image_emb,
+            text_embeddings=text_emb,
+            axes=axes,
+        )
+        validate_axis_scores(scores, n_images=10)
+
+    def test_default_axes_used_when_none(self) -> None:
+        text_emb = _make_synthetic_text_embeddings(list(DEFAULT_PROMPT_AXES), dim=32)
+        image_emb = _random_embeddings(5, d=32)
+        scores = build_clip_axes(
+            image_embeddings=image_emb,
+            text_embeddings=text_emb,
+        )
+        assert len(axis_names(scores)) == len(DEFAULT_PROMPT_AXES)
+
+    def test_scores_are_deterministic(self) -> None:
+        axes = list(DEFAULT_PROMPT_AXES[:2])
+        text_emb = _make_synthetic_text_embeddings(axes, dim=16)
+        image_emb = _random_embeddings(8, d=16)
+        s1 = build_clip_axes(image_embeddings=image_emb, text_embeddings=text_emb, axes=axes)
+        s2 = build_clip_axes(image_embeddings=image_emb, text_embeddings=text_emb, axes=axes)
+        pd.testing.assert_frame_equal(s1, s2)
+
+    def test_save_and_reload(self, tmp_path: Path) -> None:
+        axes = list(DEFAULT_PROMPT_AXES[:2])
+        text_emb = _make_synthetic_text_embeddings(axes, dim=16)
+        image_emb = _random_embeddings(5, d=16)
+        scores = build_clip_axes(
+            image_embeddings=image_emb,
+            text_embeddings=text_emb,
+            axes=axes,
+        )
+        save_axis_scores(scores, tmp_path)
+        loaded = load_axis_scores(tmp_path)
+        assert loaded is not None
+        pd.testing.assert_frame_equal(loaded, scores)

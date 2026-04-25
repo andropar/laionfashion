@@ -7,14 +7,27 @@ text encoder.
 
 The API is designed so that proxy axes and real prompt-direction axes share the
 same load/save/validate interface.
+
+Prompt-direction axes:
+    1. Encode the positive and negative prompts with a CLIP text encoder.
+    2. Compute the direction vector: ``normalize(pos - neg)``.
+    3. Score each image embedding by dot product with the direction.
+    Higher scores → closer to the positive prompt.
 """
 
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
+from PIL import Image
+from tqdm.auto import tqdm
+
+logger = logging.getLogger(__name__)
 
 
 def load_axis_scores(bundle_dir: str | Path) -> pd.DataFrame | None:
@@ -170,3 +183,221 @@ def build_demo_axes(
         result[axis_name] = blended.astype(np.float32)
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Prompt-direction axes (real CLIP axes)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PromptAxis:
+    """A style axis defined by positive and negative text prompts."""
+
+    name: str
+    positive: str
+    negative: str
+
+
+# Default axes — treat as exploratory, not ground truth.
+DEFAULT_PROMPT_AXES: tuple[PromptAxis, ...] = (
+    PromptAxis(
+        name="minimalist_vs_maximalist",
+        positive="a minimalist clean outfit with simple lines",
+        negative="a busy cluttered maximalist outfit with many patterns",
+    ),
+    PromptAxis(
+        name="formal_vs_casual",
+        positive="a formal business outfit, suit, tie, professional attire",
+        negative="a casual everyday outfit, relaxed clothing, t-shirt and jeans",
+    ),
+    PromptAxis(
+        name="streetwear_vs_classic",
+        positive="a streetwear outfit, urban style, sneakers, hoodie",
+        negative="a classic formal outfit, traditional style, dress shoes",
+    ),
+    PromptAxis(
+        name="colorful_vs_neutral",
+        positive="a colorful vibrant outfit with bright bold colors",
+        negative="a neutral monochrome outfit in black white grey beige",
+    ),
+    PromptAxis(
+        name="polished_vs_rough",
+        positive="a polished well-coordinated put-together outfit",
+        negative="a rough rugged worn distressed outfit",
+    ),
+    PromptAxis(
+        name="sporty_vs_elegant",
+        positive="a sporty athletic outfit, activewear, sneakers",
+        negative="an elegant evening outfit, gown, heels, formal dress",
+    ),
+)
+
+
+def compute_prompt_directions(
+    axes: Sequence[PromptAxis],
+    text_embeddings: dict[str, np.ndarray],
+) -> dict[str, np.ndarray]:
+    """Compute normalized direction vectors from pre-encoded text embeddings.
+
+    Parameters
+    ----------
+    axes:
+        Prompt axis definitions.
+    text_embeddings:
+        Dict mapping prompt text to its embedding vector.  Must contain
+        entries for every ``axis.positive`` and ``axis.negative``.
+
+    Returns
+    -------
+    Dict mapping axis name to normalized direction vector.
+    """
+    directions = {}
+    for axis in axes:
+        pos = text_embeddings[axis.positive].astype(np.float64)
+        neg = text_embeddings[axis.negative].astype(np.float64)
+        direction = pos - neg
+        norm = np.linalg.norm(direction)
+        if norm > 1e-12:
+            direction = direction / norm
+        directions[axis.name] = direction.astype(np.float32)
+    return directions
+
+
+def score_embeddings_on_axes(
+    image_embeddings: np.ndarray,
+    directions: dict[str, np.ndarray],
+) -> pd.DataFrame:
+    """Score image embeddings against prompt-direction axes.
+
+    Parameters
+    ----------
+    image_embeddings:
+        (n, d) float array of L2-normalized image embeddings.
+    directions:
+        Dict mapping axis name to (d,) direction vector from
+        ``compute_prompt_directions``.
+
+    Returns
+    -------
+    DataFrame with ``row_id`` plus one column per axis (dot product scores).
+    """
+    n = image_embeddings.shape[0]
+    result = pd.DataFrame({"row_id": np.arange(n, dtype=int)})
+    emb = image_embeddings.astype(np.float32)
+    for axis_name, direction in directions.items():
+        scores = emb @ direction.astype(np.float32)
+        result[axis_name] = scores
+    return result
+
+
+def encode_texts_with_clip(
+    texts: list[str],
+    model_name: str = "ViT-B-32",
+    pretrained: str = "laion400m_e31",
+) -> dict[str, np.ndarray]:
+    """Encode a list of texts with a CLIP model.
+
+    Returns a dict mapping each text to its L2-normalized embedding.
+    Requires ``open_clip`` and ``torch``.
+    """
+    import open_clip
+    import torch
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    try:
+        model, _, _ = open_clip.create_model_and_transforms(
+            model_name, pretrained=pretrained, device=device
+        )
+    except Exception:
+        logger.warning("Failed to load %s/%s, falling back to openai", model_name, pretrained)
+        pretrained = "openai"
+        model, _, _ = open_clip.create_model_and_transforms(
+            model_name, pretrained="openai", device=device
+        )
+    model.eval()
+    tokenizer = open_clip.get_tokenizer(model_name)
+
+    embeddings: dict[str, np.ndarray] = {}
+    with torch.no_grad():
+        tokens = tokenizer(texts).to(device)
+        features = model.encode_text(tokens)
+        features = features / features.norm(dim=-1, keepdim=True)
+        features_np = features.cpu().numpy()
+        for text, vec in zip(texts, features_np):
+            embeddings[text] = vec
+
+    return embeddings
+
+
+def encode_images_with_clip(
+    image_paths: list[Path],
+    model_name: str = "ViT-B-32",
+    pretrained: str = "laion400m_e31",
+    batch_size: int = 32,
+) -> np.ndarray:
+    """Encode images with a CLIP model.
+
+    Returns an (n, d) L2-normalized embedding matrix.
+    Requires ``open_clip`` and ``torch``.
+    """
+    import open_clip
+    import torch
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    try:
+        model, _, preprocess = open_clip.create_model_and_transforms(
+            model_name, pretrained=pretrained, device=device
+        )
+    except Exception:
+        logger.warning("Failed to load %s/%s, falling back to openai", model_name, pretrained)
+        pretrained = "openai"
+        model, _, preprocess = open_clip.create_model_and_transforms(
+            model_name, pretrained="openai", device=device
+        )
+    model.eval()
+
+    all_features = []
+    for start in tqdm(range(0, len(image_paths), batch_size), desc="Encoding images"):
+        batch_paths = image_paths[start : start + batch_size]
+        tensors = []
+        for p in batch_paths:
+            img = Image.open(p).convert("RGB")
+            tensors.append(preprocess(img))
+        batch = torch.stack(tensors).to(device)
+        with torch.no_grad():
+            feats = model.encode_image(batch)
+            feats = feats / feats.norm(dim=-1, keepdim=True)
+            all_features.append(feats.cpu().numpy())
+
+    return np.concatenate(all_features, axis=0).astype(np.float32)
+
+
+def build_clip_axes(
+    *,
+    image_embeddings: np.ndarray,
+    text_embeddings: dict[str, np.ndarray],
+    axes: Sequence[PromptAxis] | None = None,
+) -> pd.DataFrame:
+    """Build prompt-direction axis scores from pre-encoded CLIP embeddings.
+
+    This is the main entry point for computing real style axes.  It expects
+    that both image and text embeddings come from the same CLIP model.
+
+    Parameters
+    ----------
+    image_embeddings:
+        (n, d) L2-normalized CLIP image embeddings.
+    text_embeddings:
+        Dict mapping prompt texts to L2-normalized CLIP text embeddings.
+    axes:
+        Prompt axis definitions.  Defaults to :data:`DEFAULT_PROMPT_AXES`.
+
+    Returns
+    -------
+    DataFrame with ``row_id`` plus one column per axis.
+    """
+    if axes is None:
+        axes = DEFAULT_PROMPT_AXES
+    directions = compute_prompt_directions(axes, text_embeddings)
+    return score_embeddings_on_axes(image_embeddings, directions)
