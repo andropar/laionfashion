@@ -105,6 +105,26 @@ python /u/rothj/laion_natural/scripts/start_as_slurm_job.py \
   /u/rothj/laionfashion/scripts/outputs/01_build_debug_subset/<bundle>
 ```
 
+## Building Style-Axis Scores
+
+Compute demo/proxy axes for a bundle:
+
+```bash
+python scripts/03_build_demo_axes.py scripts/outputs/01_build_debug_subset/<bundle>
+```
+
+This writes `axis_scores.parquet` with proxy axes derived from embedding PCA and caption keywords. The Streamlit app loads them automatically to color the embedding map and show top/bottom ranked examples per axis.
+
+On Raven:
+
+```bash
+python /u/rothj/laion_natural/scripts/start_as_slurm_job.py \
+  /u/rothj/laionfashion/scripts/03_build_demo_axes.py \
+  /u/rothj/laionfashion/scripts/outputs/01_build_debug_subset/<bundle>
+```
+
+Current axes are **demo proxies**. Real prompt-direction axes will be computed on Raven using a contrastive text encoder: encode positive/negative prompts, normalize the difference vector, and score image embeddings by dot product. The `axes.py` load/save/validate API is designed to work with both proxy and real axes.
+
 ## First MVP Bias
 
 Start with full-image/outfit-level retrieval. Add person crops, garment parsing, and compatibility only after the basic map and nearest-neighbor demo are compelling.

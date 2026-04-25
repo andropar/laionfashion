@@ -107,6 +107,26 @@ python /u/rothj/laion_natural/scripts/start_as_slurm_job.py \
 
 The script auto-selects UMAP for large bundles (>= 15 images, requires `umap-learn`), PCA for small ones, and a trivial layout for 1–2 images. Use `--method pca` to force PCA.
 
+### Building style-axis scores
+
+Compute demo/proxy style-axis scores for a bundle:
+
+```bash
+python scripts/03_build_demo_axes.py scripts/outputs/01_build_debug_subset/<bundle>
+```
+
+On Raven:
+
+```bash
+python /u/rothj/laion_natural/scripts/start_as_slurm_job.py \
+  /u/rothj/laionfashion/scripts/03_build_demo_axes.py \
+  /u/rothj/laionfashion/scripts/outputs/01_build_debug_subset/<bundle>
+```
+
+This writes `axis_scores.parquet` with four proxy axes (`colorful_proxy`, `formal_proxy`, `minimal_proxy`, `outdoor_proxy`) derived from embedding PCA components and caption keywords. The Streamlit app picks them up automatically to color the embedding map and show top/bottom examples.
+
+**Note:** These are placeholder axes, not real prompt-direction scores. A future Raven implementation will compute proper axes using a contrastive text encoder (positive vs. negative prompt direction, scored by dot product with image embeddings).
+
 ## Current Scope
 
 This scaffold intentionally does not start with segmentation or model training. The immediate next step is to produce a visually inspectable debug subset and confirm that nearest neighbors/style axes are interesting enough before adding garment-level logic.
