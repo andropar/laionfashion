@@ -136,3 +136,17 @@ def test_nearest_neighbors_identical_vectors() -> None:
     assert len(results) == 4
     for _, sim in results:
         assert abs(sim - 1.0) < 1e-5
+
+
+def test_nearest_neighbors_k_larger_than_available() -> None:
+    """When k > n_images - 1, clamp to available neighbors and never return -inf."""
+    emb = np.array([[1, 0], [0, 1], [1, 1]], dtype=np.float32)
+    emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+
+    results = nearest_neighbors(emb, query_index=0, k=10)
+    assert len(results) == 2  # only 2 other images
+    indices = [idx for idx, _ in results]
+    assert 0 not in indices
+    for _, sim in results:
+        assert sim != float("-inf")
+        assert -1.0 <= sim <= 1.0

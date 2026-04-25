@@ -84,7 +84,8 @@ def nearest_neighbors(
     # Guard against zero-norm vectors
     denom = np.maximum(norms * query_norm, 1e-12)
     similarities = embeddings @ query / denom
-    # Exclude the query itself
+    # Exclude the query itself and clamp k
     similarities[query_index] = -np.inf
+    k = min(k, len(embeddings) - 1)
     top_k = np.argsort(similarities)[::-1][:k]
     return [(int(i), float(similarities[i])) for i in top_k]
