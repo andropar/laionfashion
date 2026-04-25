@@ -1236,6 +1236,9 @@ function buildDatasetInfo() {
       CLIP reranked from ${cfg.clip_reranking?.n_candidates?.toLocaleString() || '?'} candidates.
       Prompt-direction axes via ${cfg.axis_info?.clip_model || 'CLIP'}.
     </div>
+    <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border);font-size:10px;color:var(--text3);line-height:1.6;">
+      <strong style="color:var(--text2);">About.</strong> This explorer maps style structure in natural images using foundation-model embeddings. Axes are CLIP prompt directions &mdash; exploratory, not ground truth. DETR detects garments; FAISS enables retrieval. Co-occurrence &ne; compatibility.
+    </div>
   `;
 }
 
