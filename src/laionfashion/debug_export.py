@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -8,13 +9,38 @@ from PIL import Image
 from tqdm.auto import tqdm
 
 from laionfashion.data_access import LaionTarReader, NaturalSubsetIndex, open_feature_memmap
-from laionfashion.filtering import caption_matches_fashion
+from laionfashion.filtering import RejectReason, filter_caption
 
 
 def write_thumbnail(image: Image.Image, path: Path, max_size: int) -> None:
     thumb = image.copy()
     thumb.thumbnail((max_size, max_size))
     thumb.save(path, quality=90)
+
+
+@dataclass
+class FilterDiagnostics:
+    """Summary of caption filtering during subset collection."""
+
+    scanned: int = 0
+    accepted: int = 0
+    metadata_errors: int = 0
+    image_errors: int = 0
+    reject_counts: dict[str, int] = field(default_factory=dict)
+
+    def record_reject(self, reason: RejectReason) -> None:
+        key = reason.value
+        self.reject_counts[key] = self.reject_counts.get(key, 0) + 1
+
+    def to_dict(self) -> dict:
+        return {
+            "scanned": self.scanned,
+            "accepted": self.accepted,
+            "metadata_errors": self.metadata_errors,
+            "image_errors": self.image_errors,
+            "reject_counts": dict(sorted(self.reject_counts.items())),
+            "accept_rate": round(self.accepted / max(self.scanned, 1), 4),
+        }
 
 
 def collect_caption_filtered_subset(
@@ -25,17 +51,18 @@ def collect_caption_filtered_subset(
     candidate_scan: int,
     thumbnail_dir: Path,
     thumbnail_size: int,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, FilterDiagnostics]:
+    """Collect a caption-filtered subset.  Returns ``(records, diagnostics)``."""
     thumbnail_dir.mkdir(parents=True, exist_ok=True)
     records: list[dict] = []
-    scanned = 0
+    diag = FilterDiagnostics()
 
     with tqdm(total=candidate_scan, desc="Scanning captions") as pbar:
         shard_order = rng.permutation(len(index.shards))
         for shard_index in shard_order:
             if len(records) >= n_images:
                 break
-            if scanned >= candidate_scan:
+            if diag.scanned >= candidate_scan:
                 break
 
             shard = index.shards[int(shard_index)]
@@ -43,27 +70,32 @@ def collect_caption_filtered_subset(
                 n_available = min(shard.n_images, len(reader))
                 within_order = rng.permutation(n_available)
                 for within_shard_index in within_order:
-                    if len(records) >= n_images or scanned >= candidate_scan:
+                    if len(records) >= n_images or diag.scanned >= candidate_scan:
                         break
 
-                    scanned += 1
+                    diag.scanned += 1
                     pbar.update(1)
                     global_index = shard.start_index + int(within_shard_index)
 
                     try:
                         metadata = reader.read_metadata(int(within_shard_index))
                     except Exception:
+                        diag.metadata_errors += 1
                         continue
 
                     caption = metadata.get("caption", "")
-                    if not caption_matches_fashion(caption):
+                    result = filter_caption(caption)
+                    if result.rejected:
+                        diag.record_reject(result.reason)
                         continue
 
                     try:
                         image = reader.read_image(int(within_shard_index))
                     except Exception:
+                        diag.image_errors += 1
                         continue
 
+                    diag.accepted += 1
                     thumb_name = f"{len(records):06d}_{global_index}.jpg"
                     write_thumbnail(image, thumbnail_dir / thumb_name, thumbnail_size)
                     records.append(
@@ -83,7 +115,7 @@ def collect_caption_filtered_subset(
                         }
                     )
 
-    return pd.DataFrame.from_records(records)
+    return pd.DataFrame.from_records(records), diag
 
 
 def export_embeddings(

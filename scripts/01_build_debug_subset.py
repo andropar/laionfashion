@@ -40,7 +40,7 @@ def main() -> None:
 
     index = NaturalSubsetIndex.from_paths(paths)
     rng = np.random.default_rng(args.seed)
-    records = collect_caption_filtered_subset(
+    records, filter_diag = collect_caption_filtered_subset(
         index=index,
         rng=rng,
         n_images=args.n_images,
@@ -73,6 +73,7 @@ def main() -> None:
         "candidate_scan": int(args.candidate_scan),
         "seed": int(args.seed),
         "feature": embedding_info,
+        "filter_diagnostics": filter_diag.to_dict(),
         "records_path": str(records_path),
         "thumbnail_dir": str(out_dir / "thumbnails"),
         "data_paths": {
