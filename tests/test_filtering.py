@@ -109,6 +109,29 @@ class TestKnownFalsePositives:
         result = filter_caption(caption)
         assert result.rejected, f"Should reject: {caption!r}"
 
+    @pytest.mark.parametrize(
+        "caption",
+        [
+            # Exact Raven false positives (round 3)
+            "Eva Amurri Martino's son Major wears a fire hat and boots",
+            "The Queen wearing a blue dress at the coronation ceremony",
+            "Plush toy wearing a tutu on display",
+            "15 camper remodel ideas that will inspire you",
+            "The stats that suggest Lindelof and Bailly are improving",
+            "Half-dressed actors in a theater production",
+            # Related patterns
+            "Daughter wearing princess costume at Halloween party",
+            "Teddy bear doll in a knitted sweater",
+            "Prince William wearing suit at royal ceremony",
+            "Oscar award show red carpet arrivals",
+            "Ballet dancer in costume on broadway stage",
+            "Cosplay outfit at convention center",
+        ],
+    )
+    def test_rejects_round3_false_positives(self, caption: str) -> None:
+        result = filter_caption(caption)
+        assert result.rejected, f"Should reject: {caption!r}"
+
 
 # ---------------------------------------------------------------------------
 # True negatives: clearly non-fashion captions
@@ -215,6 +238,31 @@ class TestFilterResult:
 # ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
+
+
+class TestRequirePersonContext:
+    def test_strict_rejects_context_without_person(self) -> None:
+        """In strict mode, 'outfit' alone is not enough without a person hint."""
+        result = filter_caption("Best outfit for spring 2024", require_person_context=True)
+        assert result.rejected
+        assert result.reason == RejectReason.NO_PERSON_CONTEXT
+
+    def test_strict_accepts_context_with_person(self) -> None:
+        result = filter_caption("Woman shows her outfit for spring", require_person_context=True)
+        assert result.accepted
+
+    def test_strict_accepts_wearing_plus_garment(self) -> None:
+        """'wearing' serves as both context term and person hint."""
+        result = filter_caption("She is wearing a red dress", require_person_context=True)
+        assert result.accepted
+
+    def test_default_mode_accepts_context_alone(self) -> None:
+        result = filter_caption("Best outfit for spring 2024", require_person_context=False)
+        assert result.accepted
+
+    def test_backward_compat_bool_strict(self) -> None:
+        assert caption_matches_fashion("Best outfit for spring", require_person_context=True) is False
+        assert caption_matches_fashion("Woman in a great outfit", require_person_context=True) is True
 
 
 class TestEdgeCases:

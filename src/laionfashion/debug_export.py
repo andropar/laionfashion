@@ -115,6 +115,7 @@ def collect_caption_filtered_subset(
     candidate_scan: int,
     thumbnail_dir: Path,
     thumbnail_size: int,
+    require_person_context: bool = False,
 ) -> tuple[pd.DataFrame, FilterDiagnostics]:
     """Collect a caption-filtered subset.  Returns ``(records, diagnostics)``."""
     thumbnail_dir.mkdir(parents=True, exist_ok=True)
@@ -148,7 +149,7 @@ def collect_caption_filtered_subset(
                         continue
 
                     caption = metadata.get("caption", "")
-                    result = filter_caption(caption)
+                    result = filter_caption(caption, require_person_context=require_person_context)
                     if result.rejected:
                         diag.record_reject(result.reason, caption, result.matched_term)
                         continue

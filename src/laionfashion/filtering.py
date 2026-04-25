@@ -15,6 +15,10 @@ The filter uses a two-tier approach:
 
 Both tiers are gated by an exclusion list that rejects industrial, medical,
 product-only, and other non-fashion contexts.
+
+An optional ``require_person_context=True`` mode enforces that *all* accepted
+captions contain a person hint, not just garment-term matches.  This rejects
+product-only clothing captions that use context terms like "wearing" loosely.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from enum import Enum
 class RejectReason(str, Enum):
     EMPTY = "empty_caption"
     NO_FASHION_SIGNAL = "no_fashion_signal"
+    NO_PERSON_CONTEXT = "no_person_context"
     EXCLUDED = "excluded_term"
 
 
@@ -104,6 +109,8 @@ GARMENT_TERMS = (
 )
 
 # Person hints: at least one must appear alongside a garment term.
+# In strict mode (require_person_context=True), at least one must also appear
+# alongside context terms.
 PERSON_HINTS = (
     "woman",
     "women",
@@ -135,6 +142,8 @@ EXCLUSION_TERMS = (
     "children",
     "kid ",
     "kids",
+    " son ",
+    "daughter",
     # Explicit / inappropriate
     "underwear",
     "lingerie",
@@ -163,6 +172,17 @@ EXCLUSION_TERMS = (
     "text document",
     "screenshot",
     "infographic",
+    # Toys / plush / dolls
+    "plush",
+    "stuffed animal",
+    "stuffed toy",
+    "teddy bear",
+    "doll",
+    "figurine",
+    "action figure",
+    "toy ",
+    "toys",
+    "tutu",
     # Industrial / chemical / technical
     "conformal",
     "coating",
@@ -231,7 +251,7 @@ EXCLUSION_TERMS = (
     "anklet",
     "jewelry",
     "jewellery",
-    # Home decor / supplies / furniture
+    # Home decor / supplies / furniture / renovation
     "decoration",
     "decor",
     "supplies",
@@ -253,6 +273,10 @@ EXCLUSION_TERMS = (
     "cushion",
     "tablecloth",
     "placemat",
+    "remodel",
+    "renovati",  # renovation, renovating
+    "camper",
+    "caravan",
     # Automotive / mechanical
     "engine",
     "motor",
@@ -270,6 +294,29 @@ EXCLUSION_TERMS = (
     "baking",
     "cooking",
     "roast",
+    # Ceremony / royalty / awards (dress is incidental)
+    "ceremony",
+    "coronation",
+    "royal family",
+    "queen elizabeth",
+    "king charles",
+    "prince ",
+    "princess ",
+    "award show",
+    "red carpet",
+    "oscar",
+    "grammy",
+    "emmy",
+    "golden globe",
+    # Theater / performance
+    "theater",
+    "theatre",
+    "broadway",
+    "ballet",
+    "opera",
+    "costume party",
+    "cosplay",
+    "halloween",
     # News / events / politics / protest
     "protest",
     "protester",
@@ -288,6 +335,8 @@ EXCLUSION_TERMS = (
     "explosion",
     "fire department",
     "firefight",
+    "fire hat",
+    "fire truck",
     "rescue",
     "disaster",
     "flood",
@@ -351,6 +400,8 @@ EXCLUSION_TERMS = (
     "touchdown",
     "championship",
     "tournament",
+    "lindelof",
+    "bailly",
     # Animals
     "dog ",
     "cat ",
@@ -365,8 +416,21 @@ EXCLUSION_TERMS = (
 FASHION_TERMS = CONTEXT_TERMS + GARMENT_TERMS
 
 
-def filter_caption(caption: str | None) -> FilterResult:
+def filter_caption(
+    caption: str | None,
+    *,
+    require_person_context: bool = False,
+) -> FilterResult:
     """Evaluate whether *caption* describes a person wearing clothing.
+
+    Parameters
+    ----------
+    caption:
+        The image caption to evaluate.
+    require_person_context:
+        When *True*, accepted captions must contain at least one person hint
+        even if they match a context term.  This rejects product-only captions
+        that use words like "wearing" loosely (e.g. "table wearing a cloth").
 
     Returns a :class:`FilterResult` with accept/reject status and reason.
     """
@@ -380,13 +444,20 @@ def filter_caption(caption: str | None) -> FilterResult:
         if term in text:
             return FilterResult(accepted=False, reason=RejectReason.EXCLUDED, matched_term=term)
 
-    # Tier 1: context terms are sufficient on their own
+    has_person = any(hint in text for hint in PERSON_HINTS)
+
+    # Tier 1: context terms are sufficient on their own (unless strict mode)
     for term in CONTEXT_TERMS:
         if term in text:
+            if require_person_context and not has_person:
+                return FilterResult(
+                    accepted=False,
+                    reason=RejectReason.NO_PERSON_CONTEXT,
+                    matched_term=term,
+                )
             return FilterResult(accepted=True, matched_term=term)
 
     # Tier 2: garment terms require a person hint
-    has_person = any(hint in text for hint in PERSON_HINTS)
     if has_person:
         for term in GARMENT_TERMS:
             if term in text:
@@ -395,6 +466,10 @@ def filter_caption(caption: str | None) -> FilterResult:
     return FilterResult(accepted=False, reason=RejectReason.NO_FASHION_SIGNAL)
 
 
-def caption_matches_fashion(caption: str | None) -> bool:
+def caption_matches_fashion(
+    caption: str | None,
+    *,
+    require_person_context: bool = False,
+) -> bool:
     """Simple boolean interface for backward compatibility."""
-    return filter_caption(caption).accepted
+    return filter_caption(caption, require_person_context=require_person_context).accepted

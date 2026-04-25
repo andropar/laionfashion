@@ -30,6 +30,12 @@ def parse_args() -> argparse.Namespace:
         default="openclip_vit_l_14_quickgelu_metaclip_fullcc.ln_post",
     )
     parser.add_argument("--thumbnail-size", type=int, default=256)
+    parser.add_argument(
+        "--require-person-context",
+        action="store_true",
+        default=False,
+        help="Require a person hint even for context-term matches (stricter filtering).",
+    )
     return parser.parse_args()
 
 
@@ -47,6 +53,7 @@ def main() -> None:
         candidate_scan=args.candidate_scan,
         thumbnail_dir=out_dir / "thumbnails",
         thumbnail_size=args.thumbnail_size,
+        require_person_context=args.require_person_context,
     )
     if records.empty:
         raise RuntimeError(
