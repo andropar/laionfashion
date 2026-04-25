@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "laionfashion"
+version = "0.1.0"
+description = "Local/private fashion embedding explorer over LAION-natural image data."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "joblib",
+    "numpy",
+    "pandas",
+    "pillow",
+    "scikit-learn",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+server = [
+    "pyarrow",
+    "torch",
+    "umap-learn",
+]
+app = [
+    "plotly",
+    "streamlit",
+]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
