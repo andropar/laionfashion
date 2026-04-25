@@ -2,7 +2,7 @@
 
 Local-friendly scaffold for a private LAION fashion/outfit embedding explorer.
 
-The goal is to develop code locally, push to GitHub, then pull on Raven and run data jobs against the LAION-natural subset. The first implementation target is outfit-level exploration: curated image subset, existing foundation-model embeddings, prompt/style axes, 2D projection, and a small local/private explorer.
+The goal is to develop code locally, push to GitHub, then pull on Raven and run data jobs against the LAION-natural subset. The implementation target is outfit-level exploration: curated image subset, CLIP-reranked selection, prompt-direction style axes, 2D projection, and a local/private explorer app.
 
 ## Repository Workflow
 
@@ -19,28 +19,66 @@ pip install -e ".[dev,app]"
 pytest
 ```
 
-Raven execution:
+## MVP Bundle Workflow
+
+The full pipeline to produce an MVP-quality bundle:
+
+### 1. Build a CLIP-reranked debug subset (Raven)
+
+Collect caption-matched candidates, score with CLIP, export the top N:
 
 ```bash
-cd /u/rothj/laionfashion
-git pull
-/u/rothj/conda-envs/laion/bin/python scripts/00_inventory.py
 python /u/rothj/laion_natural/scripts/start_as_slurm_job.py \
-  /u/rothj/laionfashion/scripts/01_build_debug_subset.py --n-images 1000
+  /u/rothj/laionfashion/scripts/01_build_debug_subset.py \
+  --n-images 200 \
+  --n-candidates 1000 \
+  --candidate-scan 200000 \
+  --thumbnail-size 160 \
+  --selection-mode outfit \
+  --clip-rerank
 ```
 
-Use `/u/rothj/laion_natural/scripts/start_as_slurm_job.py` directly in scripted commands. It uses the `laion` conda environment by default.
+This scans ~200k captions, collects ~1000 outfit-mode matches, scores all with CLIP ViT-B-32, and exports the top 200 by person-in-outfit score.
 
-## Raven / Local Agent Protocol
+### 2. Build UMAP projection
 
-This project is meant to be a back-and-forth between local code development and Raven-side data execution.
+```bash
+python scripts/02_build_projection.py <bundle>
+```
 
-1. Local Claude Code edits, tests with synthetic/local fixtures, commits, and pushes.
-2. The Raven agent pulls the latest code, runs inventory/debug/SLURM jobs, inspects outputs, and summarizes findings.
-3. The Raven agent reports concrete next code requests for local Claude Code.
-4. Repeat until the MVP has a useful debug subset, embeddings/projection, and explorer.
+Auto-selects UMAP for bundles >= 15 images. Writes `projection.parquet`.
 
-Raven is the source of truth for data availability and job results. Local development should avoid assuming `/ptmp/rothj` exists and should work against exported debug bundles or synthetic tests.
+### 3. Compute CLIP prompt-direction style axes
+
+```bash
+python scripts/05_build_clip_axes.py <bundle>
+```
+
+Encodes thumbnails and axis prompts with CLIP ViT-B-32, scores each image against 6 prompt-direction axes (colorful/neutral, streetwear/classic, sporty/dressy, minimalist/maximalist, polished/rough, formal/casual). Writes `axis_scores.parquet`.
+
+### 4. Generate a contact sheet for review
+
+```bash
+python scripts/04_make_review_contact_sheet.py <bundle>
+```
+
+Produces a self-contained HTML contact sheet with embedded thumbnails.
+
+### 5. Browse with the Streamlit app
+
+```bash
+pip install -e ".[app]"
+streamlit run app/streamlit_app.py
+```
+
+Point the sidebar at the bundle directory. The app loads projection, axes, and manifest automatically.
+
+To copy a bundle from Raven for local browsing:
+
+```bash
+scp -r raven:/u/rothj/laionfashion/scripts/outputs/01_build_debug_subset/<bundle> \
+  ./scripts/outputs/01_build_debug_subset/
+```
 
 ## Data Assumptions
 
@@ -48,86 +86,18 @@ On Raven, the default data roots are:
 
 - LAION-natural subset: `/ptmp/rothj/cstims_laion_natural_subset`
 - LAION-natural feature memmaps: `/ptmp/rothj/cstims_laion_natural_subset_memmaps`
-- Memmap metadata: `/ptmp/rothj/cstims_laion_natural_subset_memmaps/_metadata.pkl`
 
-The subset consists of tar shards with paired `.jpg` and `.json` entries. Metadata currently includes captions, URLs, dimensions, hashes, and CLIP similarity, but sampled records did not expose NSFW or aesthetic scores. Keep generated image outputs local/private unless licensing and hosting are explicitly handled.
+The subset consists of tar shards with paired `.jpg` and `.json` entries. Keep generated image outputs local/private unless licensing and hosting are explicitly handled.
 
-## First Debug Pipeline
+## Raven / Local Agent Protocol
 
-Inventory:
+1. Local Claude Code edits, tests with synthetic/local fixtures, commits, and pushes.
+2. The Raven agent pulls the latest code, runs data jobs, inspects outputs, and summarizes findings.
+3. The Raven agent reports concrete next code requests for local Claude Code.
+4. Repeat until the MVP has a useful curated subset, embeddings, projection, style axes, and explorer.
 
-```bash
-/u/rothj/conda-envs/laion/bin/python scripts/00_inventory.py
-```
-
-Build a small fashion-caption-biased debug subset:
-
-```bash
-python /u/rothj/laion_natural/scripts/start_as_slurm_job.py \
-  /u/rothj/laionfashion/scripts/01_build_debug_subset.py \
-  --n-images 1000 \
-  --candidate-scan 50000 \
-  --feature-key openclip_vit_l_14_quickgelu_metaclip_fullcc.ln_post
-```
-
-Outputs are written to `scripts/outputs/<script_name>/<timestamp>_<id>/` and ignored by git.
-
-## Local Explorer App
-
-Browse debug bundles locally with the Streamlit app:
-
-```bash
-pip install -e ".[app]"
-streamlit run app/streamlit_app.py
-```
-
-Point the sidebar at a bundle directory (or the parent `scripts/outputs/01_build_debug_subset/` to pick from available bundles). Each bundle should contain:
-
-- `records.parquet` (or `records.csv`)
-- `embeddings.npy` – normalized float32 embeddings
-- `thumbnails/` – JPEG thumbnails referenced by the records table
-
-The app shows an image grid with captions, lets you select any image by index, and displays its nearest neighbors by cosine similarity. If a projection file is present, the app also shows a 2D embedding map.
-
-### Building a projection
-
-Compute a 2D projection from a bundle's embeddings:
-
-```bash
-python scripts/02_build_projection.py scripts/outputs/01_build_debug_subset/<bundle>
-```
-
-On Raven (for larger bundles with UMAP):
-
-```bash
-python /u/rothj/laion_natural/scripts/start_as_slurm_job.py \
-  /u/rothj/laionfashion/scripts/02_build_projection.py \
-  /u/rothj/laionfashion/scripts/outputs/01_build_debug_subset/<bundle>
-```
-
-The script auto-selects UMAP for large bundles (>= 15 images, requires `umap-learn`), PCA for small ones, and a trivial layout for 1–2 images. Use `--method pca` to force PCA.
-
-### Building style-axis scores
-
-Compute demo/proxy style-axis scores for a bundle:
-
-```bash
-python scripts/03_build_demo_axes.py scripts/outputs/01_build_debug_subset/<bundle>
-```
-
-On Raven:
-
-```bash
-python /u/rothj/laion_natural/scripts/start_as_slurm_job.py \
-  /u/rothj/laionfashion/scripts/03_build_demo_axes.py \
-  /u/rothj/laionfashion/scripts/outputs/01_build_debug_subset/<bundle>
-```
-
-This writes `axis_scores.parquet` with four proxy axes (`colorful_proxy`, `formal_proxy`, `minimal_proxy`, `outdoor_proxy`) derived from embedding PCA components and caption keywords. The Streamlit app picks them up automatically to color the embedding map and show top/bottom examples.
-
-**Note:** These are placeholder axes, not real prompt-direction scores. A future Raven implementation will compute proper axes using a contrastive text encoder (positive vs. negative prompt direction, scored by dot product with image embeddings).
+Raven is the source of truth for data availability and job results. Local development should avoid assuming `/ptmp/rothj` exists and should work against exported debug bundles or synthetic tests.
 
 ## Current Scope
 
-This scaffold intentionally does not start with segmentation or model training. The immediate next step is to produce a visually inspectable debug subset and confirm that nearest neighbors/style axes are interesting enough before adding garment-level logic.
-
+Outfit-level embedding exploration with CLIP-based curation and style axes. No segmentation, no model training, no public image hosting. The immediate focus is producing a visually compelling, screenshot-ready explorer for a case-study write-up.

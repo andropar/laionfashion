@@ -23,12 +23,10 @@ No local machine is expected to have `/ptmp/rothj` or LAION tars. Code should ei
 ssh raven
 cd /u/rothj/laionfashion
 git pull
-/u/rothj/conda-envs/laion/bin/python scripts/00_inventory.py
-python /u/rothj/laion_natural/scripts/start_as_slurm_job.py \
-  /u/rothj/laionfashion/scripts/01_build_debug_subset.py --n-images 1000
+pip install -e ".[dev,app,server]"
 ```
 
-For GPU scripts later:
+For GPU scripts:
 
 ```bash
 python /u/rothj/laion_natural/scripts/start_as_slurm_job.py --gpu \
@@ -37,29 +35,93 @@ python /u/rothj/laion_natural/scripts/start_as_slurm_job.py --gpu \
 
 Use the SLURM helper defaults unless a script explicitly needs different resources. In non-interactive shell commands, call the helper by filepath rather than relying on the `startslurm` alias.
 
+## MVP Bundle Pipeline
+
+The recommended sequence for building a case-study-ready bundle:
+
+### Step 1: Build a CLIP-reranked subset
+
+```bash
+python /u/rothj/laion_natural/scripts/start_as_slurm_job.py \
+  /u/rothj/laionfashion/scripts/01_build_debug_subset.py \
+  --n-images 200 \
+  --n-candidates 1000 \
+  --candidate-scan 200000 \
+  --thumbnail-size 160 \
+  --selection-mode outfit \
+  --clip-rerank
+```
+
+Pipeline stages:
+1. Scans ~200k captions with outfit-mode scoring (score >= 2.5).
+2. Collects ~1000 caption-matched candidates with thumbnails.
+3. Scores all candidates with CLIP ViT-B-32 against person-in-outfit vs. product-only prompts.
+4. Exports the top 200 by CLIP outfit score.
+5. Writes diagnostics: `filter_summary.json`, `accepted_captions.csv`, `rejected_captions.csv`.
+
+### Step 2: Build UMAP projection
+
+```bash
+python scripts/02_build_projection.py <bundle>
+```
+
+Writes `projection.parquet`. Auto-selects UMAP for >= 15 images.
+
+### Step 3: Compute CLIP prompt-direction style axes
+
+```bash
+python scripts/05_build_clip_axes.py <bundle>
+```
+
+Encodes bundle thumbnails and 6 axis prompt pairs with CLIP, writes `axis_scores.parquet`:
+- Colorful vs neutral
+- Streetwear vs classic
+- Sporty vs dressy
+- Minimalist vs maximalist
+- Polished vs rough
+- Formal vs casual
+
+These are exploratory prompt-direction axes, not ground-truth labels.
+
+### Step 4: Generate a review contact sheet
+
+```bash
+python scripts/04_make_review_contact_sheet.py <bundle>
+```
+
+Writes a self-contained `contact_sheet.html` for visual quality review.
+
+### Step 5: Browse with Streamlit
+
+```bash
+streamlit run app/streamlit_app.py
+```
+
+The app auto-loads projection, axes, and manifest. Features:
+- 2D embedding map with axis coloring
+- Nearest-neighbor retrieval
+- Top/bottom examples per axis with prompt labels
+- Dataset info panel (CLIP reranking stats, filtering diagnostics)
+
 ## Raven / Local Agent Protocol
 
-The intended workflow is split by responsibility.
-
 Local Claude Code:
-
 - Owns code edits, package structure, app implementation, and local tests.
-- Should work without `/ptmp/rothj` by using synthetic fixtures or exported debug bundles.
+- Should work without `/ptmp/rothj`.
 - Pushes changes to GitHub when ready for server validation.
 
 Raven agent:
-
 - Pulls the latest code after the user says it is ready.
-- Runs inventory scripts, debug subset builders, and SLURM jobs on the cluster.
-- Reads generated manifests/logs/results and reports what worked, what failed, and what local code should change next.
-- Does not assume public image hosting is allowed; LAION-derived image outputs stay private/local.
+- Runs inventory scripts, debug subset builders, and SLURM jobs.
+- Reports what worked, what failed, and what local code should change next.
+- LAION-derived image outputs stay private/local.
 
-Suggested handoff format from Raven to local:
+Handoff format:
 
 ```text
 Please implement <specific feature>. Context from Raven:
-- Data/output path:
-- Observed issue/result:
+- Bundle path / contents:
+- Observed issue:
 - Expected behavior:
 - Validation command:
 ```
@@ -72,60 +134,9 @@ Generated outputs belong under:
 scripts/outputs/<script_name>/<timestamp>_<id>/
 ```
 
-These outputs are ignored by git. For local UI development, copy only small derived bundles: metadata tables, thumbnails, embeddings/projections, and indices. Do not expose raw LAION images publicly.
+These outputs are ignored by git. For local UI development, copy only small derived bundles from Raven. Do not expose raw LAION images publicly.
 
-## Running the Streamlit App
+## Legacy Scripts
 
-```bash
-pip install -e ".[app]"
-streamlit run app/streamlit_app.py
-```
-
-The app works entirely against exported debug bundles — no Raven paths required. Enter the bundle directory path in the sidebar (or point at `scripts/outputs/01_build_debug_subset/` to pick from sub-bundles).
-
-To get a bundle from Raven, copy the output directory (e.g. via `scp -r raven:/u/rothj/laionfashion/scripts/outputs/01_build_debug_subset/<timestamp>_<id> ./scripts/outputs/01_build_debug_subset/`) to your local checkout.
-
-## Building Projections
-
-Compute a 2D style-space projection for a debug bundle:
-
-```bash
-python scripts/02_build_projection.py scripts/outputs/01_build_debug_subset/<bundle>
-```
-
-This writes `projection.parquet` into the bundle directory and updates `manifest.json`. The Streamlit app picks it up automatically and shows an embedding map.
-
-Auto-selection: UMAP for >= 15 images (requires `umap-learn` from the `server` extra), PCA for 3–14, trivial layout for 1–2. Force a method with `--method pca`.
-
-On Raven:
-
-```bash
-python /u/rothj/laion_natural/scripts/start_as_slurm_job.py \
-  /u/rothj/laionfashion/scripts/02_build_projection.py \
-  /u/rothj/laionfashion/scripts/outputs/01_build_debug_subset/<bundle>
-```
-
-## Building Style-Axis Scores
-
-Compute demo/proxy axes for a bundle:
-
-```bash
-python scripts/03_build_demo_axes.py scripts/outputs/01_build_debug_subset/<bundle>
-```
-
-This writes `axis_scores.parquet` with proxy axes derived from embedding PCA and caption keywords. The Streamlit app loads them automatically to color the embedding map and show top/bottom ranked examples per axis.
-
-On Raven:
-
-```bash
-python /u/rothj/laion_natural/scripts/start_as_slurm_job.py \
-  /u/rothj/laionfashion/scripts/03_build_demo_axes.py \
-  /u/rothj/laionfashion/scripts/outputs/01_build_debug_subset/<bundle>
-```
-
-Current axes are **demo proxies**. Real prompt-direction axes will be computed on Raven using a contrastive text encoder: encode positive/negative prompts, normalize the difference vector, and score image embeddings by dot product. The `axes.py` load/save/validate API is designed to work with both proxy and real axes.
-
-## First MVP Bias
-
-Start with full-image/outfit-level retrieval. Add person crops, garment parsing, and compatibility only after the basic map and nearest-neighbor demo are compelling.
-
+- `scripts/00_inventory.py` — LAION-natural shard inventory (Raven only).
+- `scripts/03_build_demo_axes.py` — Proxy axes from PCA + caption keywords. Superseded by `05_build_clip_axes.py` for bundles with CLIP access.

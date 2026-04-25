@@ -77,13 +77,30 @@ def _axis_prompt_info(manifest: dict | None, axis_name: str) -> tuple[str | None
 
 
 def _is_clip_axes(manifest: dict | None) -> bool:
-    """Check if axis scores were computed with CLIP prompt directions."""
     if manifest is None:
         return False
     return manifest.get("axis_scores", {}).get("method") == "clip_prompt_direction"
 
 
-# Auto-detect: if the user points at the parent outputs dir, list available bundles
+# Preferred axis display order — showcase axes first, then the rest.
+_SHOWCASE_AXES = [
+    "colorful_vs_neutral",
+    "streetwear_vs_classic",
+    "sporty_vs_dressy",
+    "minimalist_vs_maximalist",
+    "polished_vs_rough",
+    "formal_vs_casual",
+]
+
+
+def _order_axes(axes: list[str]) -> list[str]:
+    """Sort axes with showcase axes first, preserving relative order for unknowns."""
+    ordered = [a for a in _SHOWCASE_AXES if a in axes]
+    ordered += [a for a in axes if a not in ordered]
+    return ordered
+
+
+# Auto-detect bundles
 bundle_dir = Path(bundle_path)
 if bundle_dir.is_dir() and not (bundle_dir / "embeddings.npy").exists():
     candidates = sorted(
@@ -118,18 +135,19 @@ clip_axes = _is_clip_axes(manifest)
 
 st.sidebar.success(f"Loaded {bundle.n_images} images from `{bundle_dir.name}`")
 if projection is not None:
-    st.sidebar.info(f"Projection loaded ({len(projection)} points)")
+    st.sidebar.info(f"Projection: {len(projection)} points")
 
 # ---------------------------------------------------------------------------
 # Sidebar controls
 # ---------------------------------------------------------------------------
 
 N_COLS = st.sidebar.slider("Grid columns", 2, 8, 4)
-MAX_GRID = st.sidebar.slider("Images shown", 10, min(200, bundle.n_images), min(50, bundle.n_images))
+default_grid = min(48, bundle.n_images) if bundle.n_images > 50 else min(50, bundle.n_images)
+MAX_GRID = st.sidebar.slider("Images shown", 10, min(200, bundle.n_images), default_grid)
 k = st.sidebar.slider("Number of neighbors", 1, 30, 8)
 
 # Axis selector
-available_axes = axis_names(axis_scores) if axis_scores is not None else []
+available_axes = _order_axes(axis_names(axis_scores)) if axis_scores is not None else []
 selected_axis: str | None = None
 if available_axes:
     st.sidebar.markdown("---")
@@ -153,6 +171,38 @@ if available_axes:
             st.sidebar.caption(
                 "Proxy axis — derived from embedding PCA and caption keywords."
             )
+
+# ---------------------------------------------------------------------------
+# Dataset info panel
+# ---------------------------------------------------------------------------
+
+with st.sidebar.expander("Dataset info", expanded=False):
+    st.write(f"**Images:** {bundle.n_images}")
+    st.write(f"**Embedding dim:** {bundle.embeddings.shape[1]}")
+    if manifest:
+        if "clip_reranking" in manifest:
+            cr = manifest["clip_reranking"]
+            st.write(f"**CLIP reranked:** top {cr.get('n_exported', '?')} of {cr.get('n_candidates', '?')} candidates")
+            sd = cr.get("score_distribution", {})
+            if sd:
+                st.write(f"**Outfit score range:** {sd.get('min', '?'):.4f} \u2013 {sd.get('max', '?'):.4f}")
+                st.write(f"**Export cutoff:** {sd.get('p75', '?'):.4f} (p75)")
+        fd = manifest.get("filter_diagnostics", {})
+        if fd:
+            st.write(f"**Captions scanned:** {fd.get('scanned', '?'):,}")
+            st.write(f"**Caption accept rate:** {fd.get('accept_rate', '?'):.1%}")
+        if "axis_scores" in manifest:
+            ax_info = manifest["axis_scores"]
+            method = ax_info.get("method", "unknown")
+            label = "CLIP prompt direction" if method == "clip_prompt_direction" else method
+            st.write(f"**Axis method:** {label}")
+            if ax_info.get("clip_model"):
+                st.write(f"**Axis model:** {ax_info['clip_model']}/{ax_info.get('clip_pretrained', '?')}")
+    st.caption(
+        "Debug subset from LAION-natural. Caption keyword + CLIP image "
+        "scoring used for selection. Images are local/private. Axes are "
+        "exploratory prompt directions, not ground-truth labels."
+    )
 
 # ---------------------------------------------------------------------------
 # Shared state: selected image index
@@ -183,27 +233,22 @@ if projection is not None:
     nn_indices = {idx for idx, _ in nearest_neighbors(bundle.embeddings, selected_idx, k=k)}
     is_neighbor = proj["row_id"].isin(nn_indices)
 
-    # Determine color values for axis coloring
     use_axis_color = selected_axis is not None and axis_scores is not None
     if use_axis_color:
         proj = proj.merge(
             axis_scores[["row_id", selected_axis]], on="row_id", how="left"
         )
-        # Auto-scale colorbar to data range
         axis_vals = proj[selected_axis].dropna()
         cmin = float(axis_vals.min())
         cmax = float(axis_vals.max())
-        # Symmetric around zero if the range crosses it
         if cmin < 0 and cmax > 0:
             bound = max(abs(cmin), abs(cmax))
             cmin, cmax = -bound, bound
 
     fig = go.Figure()
 
-    # Background points
     mask_bg = ~is_selected & ~is_neighbor
     if use_axis_color:
-        # Build hover text with axis score
         hover_texts = []
         for _, r in proj.loc[mask_bg].iterrows():
             hover_texts.append(
@@ -244,7 +289,6 @@ if projection is not None:
             )
         )
 
-    # Neighbor points
     fig.add_trace(
         go.Scatter(
             x=proj.loc[is_neighbor, "x"],
@@ -258,7 +302,6 @@ if projection is not None:
         )
     )
 
-    # Selected point
     fig.add_trace(
         go.Scatter(
             x=proj.loc[is_selected, "x"],
@@ -275,7 +318,7 @@ if projection is not None:
     fig.update_layout(
         xaxis_title="Projection x",
         yaxis_title="Projection y",
-        height=500,
+        height=520,
         margin=dict(l=40, r=20, t=30, b=40),
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
         dragmode="pan",
@@ -299,7 +342,6 @@ else:
 if selected_axis and axis_scores is not None:
     st.header(_format_axis_name(selected_axis))
 
-    # Show prompt interpretation if available
     pos_prompt, neg_prompt = _axis_prompt_info(manifest, selected_axis)
     if pos_prompt and neg_prompt:
         pcol1, pcol2 = st.columns(2)
@@ -317,7 +359,6 @@ if selected_axis and axis_scores is not None:
     n_examples = min(5, bundle.n_images // 2) if bundle.n_images >= 4 else bundle.n_images
     top_ids, bottom_ids = top_bottom_indices(axis_scores, selected_axis, n=n_examples)
 
-    # Determine positive/negative endpoint labels
     parts = selected_axis.split("_vs_")
     high_label = parts[0].replace("_", " ").capitalize() if len(parts) == 2 else "Highest"
     low_label = parts[1].replace("_", " ").capitalize() if len(parts) == 2 else "Lowest"
@@ -355,9 +396,66 @@ if selected_axis and axis_scores is not None:
 elif axis_scores is None and projection is not None:
     st.info(
         "No axis scores found. Run `python scripts/05_build_clip_axes.py <bundle_dir>` "
-        "to compute CLIP prompt-direction axes, or `python scripts/03_build_demo_axes.py "
-        "<bundle_dir>` for proxy axes."
+        "to compute CLIP prompt-direction axes."
     )
+
+# ---------------------------------------------------------------------------
+# Nearest neighbors
+# ---------------------------------------------------------------------------
+
+st.header("Nearest neighbors")
+
+selected_idx = st.number_input(
+    "Select image index (row_id)",
+    min_value=0,
+    max_value=bundle.n_images - 1,
+    value=st.session_state.selected_idx,
+    step=1,
+    key="nn_selector",
+)
+if selected_idx != st.session_state.selected_idx:
+    st.session_state.selected_idx = selected_idx
+    st.rerun()
+
+neighbors = nearest_neighbors(bundle.embeddings, selected_idx, k=k)
+
+st.subheader("Query image")
+query_thumb = bundle.thumbnail_path(selected_idx)
+query_row = bundle.records.iloc[selected_idx]
+qcol1, qcol2 = st.columns([1, 3])
+with qcol1:
+    if query_thumb and query_thumb.exists():
+        st.image(str(query_thumb), use_container_width=True)
+    else:
+        st.write("*(no thumbnail)*")
+with qcol2:
+    st.write(f"**Caption:** {query_row.get('caption', 'N/A')}")
+    if "image_outfit_score" in query_row.index:
+        st.write(f"**Outfit score:** {query_row['image_outfit_score']:.4f}")
+    if axis_scores is not None and available_axes:
+        scores_row = axis_scores.loc[axis_scores["row_id"] == selected_idx]
+        if not scores_row.empty:
+            score_strs = [
+                f"{_format_axis_name(a)}: {float(scores_row[a].iloc[0]):.3f}"
+                for a in available_axes
+            ]
+            st.write("**Axis scores:**  \n" + "  \n".join(score_strs))
+
+st.subheader(f"Top {k} neighbors")
+nn_cols = st.columns(min(k, N_COLS))
+for j, (idx, sim) in enumerate(neighbors):
+    col = nn_cols[j % len(nn_cols)]
+    nn_row = bundle.records.iloc[idx]
+    nn_thumb = bundle.thumbnail_path(idx)
+    with col:
+        if nn_thumb and nn_thumb.exists():
+            st.image(str(nn_thumb), use_container_width=True)
+        else:
+            st.write("*(no thumbnail)*")
+        st.caption(f"sim={sim:.3f}")
+        cap = nn_row.get("caption", "")
+        if cap:
+            st.caption(cap[:100])
 
 # ---------------------------------------------------------------------------
 # Image grid
@@ -383,65 +481,3 @@ for i, (_, row) in enumerate(records.iterrows()):
         if st.button(f"Select #{row_id}", key=f"sel_{row_id}"):
             st.session_state.selected_idx = row_id
             st.rerun()
-
-# ---------------------------------------------------------------------------
-# Single-image selection and nearest neighbors
-# ---------------------------------------------------------------------------
-
-st.header("Nearest neighbors")
-
-selected_idx = st.number_input(
-    "Select image index (row_id)",
-    min_value=0,
-    max_value=bundle.n_images - 1,
-    value=st.session_state.selected_idx,
-    step=1,
-    key="nn_selector",
-)
-if selected_idx != st.session_state.selected_idx:
-    st.session_state.selected_idx = selected_idx
-    st.rerun()
-
-neighbors = nearest_neighbors(bundle.embeddings, selected_idx, k=k)
-
-# Show selected image
-st.subheader("Query image")
-query_thumb = bundle.thumbnail_path(selected_idx)
-query_row = bundle.records.iloc[selected_idx]
-qcol1, qcol2 = st.columns([1, 3])
-with qcol1:
-    if query_thumb and query_thumb.exists():
-        st.image(str(query_thumb), use_container_width=True)
-    else:
-        st.write("*(no thumbnail)*")
-with qcol2:
-    st.write(f"**Caption:** {query_row.get('caption', 'N/A')}")
-    st.write(f"**Global index:** {query_row.get('global_index', 'N/A')}")
-    if "image_outfit_score" in query_row.index:
-        st.write(f"**Outfit score:** {query_row['image_outfit_score']:.4f}")
-    # Show axis scores for selected image
-    if axis_scores is not None and available_axes:
-        scores_row = axis_scores.loc[axis_scores["row_id"] == selected_idx]
-        if not scores_row.empty:
-            score_strs = [
-                f"{_format_axis_name(a)}: {float(scores_row[a].iloc[0]):.3f}"
-                for a in available_axes
-            ]
-            st.write("**Axis scores:**  \n" + "  \n".join(score_strs))
-
-# Show neighbors
-st.subheader(f"Top {k} neighbors")
-nn_cols = st.columns(min(k, N_COLS))
-for j, (idx, sim) in enumerate(neighbors):
-    col = nn_cols[j % len(nn_cols)]
-    nn_row = bundle.records.iloc[idx]
-    nn_thumb = bundle.thumbnail_path(idx)
-    with col:
-        if nn_thumb and nn_thumb.exists():
-            st.image(str(nn_thumb), use_container_width=True)
-        else:
-            st.write("*(no thumbnail)*")
-        st.caption(f"sim={sim:.3f}")
-        cap = nn_row.get("caption", "")
-        if cap:
-            st.caption(cap[:100])
