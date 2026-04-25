@@ -71,16 +71,26 @@ class CLIPOutfitScorer:
     """
 
     model_name: str = "ViT-B-32"
-    pretrained: str = "openai"
+    pretrained: str = "laion400m_e31"
 
     def __post_init__(self) -> None:
         import open_clip
         import torch
 
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
-        self._model, _, self._preprocess = open_clip.create_model_and_transforms(
-            self.model_name, pretrained=self.pretrained, device=self._device
-        )
+        try:
+            self._model, _, self._preprocess = open_clip.create_model_and_transforms(
+                self.model_name, pretrained=self.pretrained, device=self._device
+            )
+        except Exception:
+            logger.warning(
+                "Failed to load %s/%s, falling back to %s/openai",
+                self.model_name, self.pretrained, self.model_name,
+            )
+            self.pretrained = "openai"  # type: ignore[misc]
+            self._model, _, self._preprocess = open_clip.create_model_and_transforms(
+                self.model_name, pretrained="openai", device=self._device
+            )
         self._model.eval()
         self._tokenizer = open_clip.get_tokenizer(self.model_name)
 
@@ -140,3 +150,18 @@ class ThresholdMockScorer:
     def score_image(self, image: Image.Image) -> float:
         self._count += 1
         return self._high if self._count % 2 == 1 else self._low
+
+
+class ListScorer:
+    """Returns scores from a pre-defined list, cycling if needed."""
+
+    def __init__(self, scores: list[float]) -> None:
+        if not scores:
+            raise ValueError("scores must be non-empty")
+        self._scores = scores
+        self._idx = 0
+
+    def score_image(self, image: Image.Image) -> float:
+        score = self._scores[self._idx % len(self._scores)]
+        self._idx += 1
+        return score

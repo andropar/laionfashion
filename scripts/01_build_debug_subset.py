@@ -13,7 +13,12 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from laionfashion.config import load_data_paths
 from laionfashion.data_access import FEATURE_REGISTRY, NaturalSubsetIndex
-from laionfashion.debug_export import collect_caption_filtered_subset, export_embeddings
+from laionfashion.debug_export import (
+    collect_caption_filtered_subset,
+    export_embeddings,
+    rewrite_thumbnails_for_ranked,
+    score_and_rank_candidates,
+)
 from laionfashion.filtering import SELECTION_MODES
 from laionfashion.outputs import make_output_dir
 
@@ -36,7 +41,7 @@ def parse_args() -> argparse.Namespace:
         choices=sorted(SELECTION_MODES),
         default=None,
         help=(
-            "Selection mode: broad (score>=0.5), strict (score>=1.5), "
+            "Caption selection mode: broad (score>=0.5), strict (score>=1.5), "
             "outfit (score>=2.5). Default: tier-based filtering."
         ),
     )
@@ -52,30 +57,49 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Legacy: require a person hint even for context-term matches.",
     )
-    # Image-side CLIP filtering
+
+    # CLIP post-ranking (preferred workflow)
     parser.add_argument(
-        "--use-image-clip-filter",
+        "--clip-rerank",
         action="store_true",
         default=False,
-        help="Score images with CLIP against outfit/product prompts and reject below threshold.",
+        help=(
+            "Collect a larger candidate pool (--n-candidates), score all with "
+            "CLIP, and export the top --n-images. Preferred over --use-image-clip-filter."
+        ),
     )
     parser.add_argument(
-        "--min-image-outfit-score",
-        type=float,
-        default=0.0,
-        help="Minimum CLIP outfit score to accept an image (default: 0.0).",
+        "--n-candidates",
+        type=int,
+        default=None,
+        help="Number of caption-matched candidates to collect before CLIP ranking. "
+             "Defaults to 5 * --n-images.",
     )
     parser.add_argument(
         "--clip-model-name",
         type=str,
         default="ViT-B-32",
-        help="Open CLIP model name for image scoring (default: ViT-B-32).",
+        help="Open CLIP model name (default: ViT-B-32).",
     )
     parser.add_argument(
         "--clip-pretrained",
         type=str,
-        default="openai",
-        help="Open CLIP pretrained weights name (default: openai).",
+        default="laion400m_e31",
+        help="Open CLIP pretrained weights (default: laion400m_e31, falls back to openai).",
+    )
+
+    # Legacy inline CLIP gate (kept for backward compat)
+    parser.add_argument(
+        "--use-image-clip-filter",
+        action="store_true",
+        default=False,
+        help="Legacy: inline CLIP gate during collection. Prefer --clip-rerank.",
+    )
+    parser.add_argument(
+        "--min-image-outfit-score",
+        type=float,
+        default=0.0,
+        help="Minimum CLIP outfit score for inline gate (default: 0.0).",
     )
     return parser.parse_args()
 
@@ -85,35 +109,65 @@ def main() -> None:
     paths = load_data_paths()
     out_dir = make_output_dir(__file__, paths.output_root)
 
-    # Set up optional image scorer
-    image_scorer = None
-    if args.use_image_clip_filter:
+    # Resolve candidate pool size
+    if args.clip_rerank:
+        n_collect = args.n_candidates or (5 * args.n_images)
+    else:
+        n_collect = args.n_images
+
+    # Legacy inline scorer
+    inline_scorer = None
+    if args.use_image_clip_filter and not args.clip_rerank:
         from laionfashion.image_scoring import CLIPOutfitScorer
-        print(f"Loading CLIP model: {args.clip_model_name}/{args.clip_pretrained}")
-        image_scorer = CLIPOutfitScorer(
+        print(f"Loading CLIP model (inline gate): {args.clip_model_name}/{args.clip_pretrained}")
+        inline_scorer = CLIPOutfitScorer(
             model_name=args.clip_model_name,
             pretrained=args.clip_pretrained,
         )
-        print(f"CLIP outfit scorer ready, min_image_outfit_score={args.min_image_outfit_score}")
 
     index = NaturalSubsetIndex.from_paths(paths)
     rng = np.random.default_rng(args.seed)
+
+    print(f"Collecting up to {n_collect} caption-matched candidates...")
     records, filter_diag = collect_caption_filtered_subset(
         index=index,
         rng=rng,
-        n_images=args.n_images,
+        n_images=n_collect,
         candidate_scan=args.candidate_scan,
         thumbnail_dir=out_dir / "thumbnails",
         thumbnail_size=args.thumbnail_size,
         require_person_context=args.require_person_context,
         selection_mode=args.selection_mode,
         min_score=args.min_filter_score,
-        image_scorer=image_scorer,
-        min_image_score=args.min_image_outfit_score,
+        image_scorer=inline_scorer,
+        min_image_score=args.min_image_outfit_score if inline_scorer else 0.0,
     )
     if records.empty:
         raise RuntimeError(
-            "No records matched the debug filter. Increase --candidate-scan or adjust filters."
+            "No records matched the caption filter. Increase --candidate-scan or adjust filters."
+        )
+    print(f"Caption filtering: {len(records)} candidates from {filter_diag.scanned} scanned")
+
+    # CLIP post-ranking
+    ranking_diag = None
+    if args.clip_rerank:
+        from laionfashion.image_scoring import CLIPOutfitScorer
+        print(f"Loading CLIP model (reranking): {args.clip_model_name}/{args.clip_pretrained}")
+        rerank_scorer = CLIPOutfitScorer(
+            model_name=args.clip_model_name,
+            pretrained=args.clip_pretrained,
+        )
+        print(f"Scoring {len(records)} candidates, exporting top {args.n_images}...")
+        records, ranking_diag = score_and_rank_candidates(
+            candidates=records,
+            bundle_dir=out_dir,
+            image_scorer=rerank_scorer,
+            n_export=args.n_images,
+        )
+        records = rewrite_thumbnails_for_ranked(records, out_dir)
+        print(
+            f"CLIP reranking: {ranking_diag.n_scored} scored, "
+            f"{ranking_diag.n_exported} exported"
         )
 
     records_path = out_dir / "records.parquet"
@@ -152,7 +206,15 @@ def main() -> None:
             "No person detector, NSFW detector, or minor filter has been applied yet.",
         ],
     }
-    if args.use_image_clip_filter:
+    if args.clip_rerank and ranking_diag is not None:
+        manifest["clip_reranking"] = {
+            "model": args.clip_model_name,
+            "pretrained": args.clip_pretrained,
+            "n_candidates": ranking_diag.n_candidates,
+            "n_exported": ranking_diag.n_exported,
+            **ranking_diag.to_dict(),
+        }
+    if args.use_image_clip_filter and not args.clip_rerank:
         manifest["image_clip_filter"] = {
             "model": args.clip_model_name,
             "pretrained": args.clip_pretrained,

@@ -279,6 +279,146 @@ def collect_caption_filtered_subset(
     return pd.DataFrame.from_records(records), diag
 
 
+@dataclass
+class RankingDiagnostics:
+    """Diagnostics from CLIP post-ranking of a candidate pool."""
+
+    n_candidates: int = 0
+    n_scored: int = 0
+    n_exported: int = 0
+    score_errors: int = 0
+    all_scores: list[float] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        d: dict = {
+            "n_candidates": self.n_candidates,
+            "n_scored": self.n_scored,
+            "n_exported": self.n_exported,
+            "score_errors": self.score_errors,
+        }
+        if self.all_scores:
+            scores = sorted(self.all_scores)
+            n = len(scores)
+            d["score_distribution"] = {
+                "min": round(scores[0], 4),
+                "max": round(scores[-1], 4),
+                "mean": round(sum(scores) / n, 4),
+                "median": round(scores[n // 2], 4),
+                "p25": round(scores[n // 4], 4),
+                "p75": round(scores[3 * n // 4], 4),
+                "count": n,
+            }
+        return d
+
+
+def score_and_rank_candidates(
+    *,
+    candidates: pd.DataFrame,
+    bundle_dir: Path,
+    image_scorer: ImageScorer,
+    n_export: int,
+) -> tuple[pd.DataFrame, RankingDiagnostics]:
+    """Score candidate thumbnails and return the top *n_export* by image score.
+
+    Parameters
+    ----------
+    candidates:
+        DataFrame from ``collect_caption_filtered_subset``.  Must have
+        ``thumbnail_path`` column (relative to *bundle_dir*).
+    bundle_dir:
+        Root directory containing the thumbnails.
+    image_scorer:
+        Scorer implementing ``score_image(PIL.Image) -> float``.
+    n_export:
+        Number of top-scoring candidates to keep.
+
+    Returns
+    -------
+    (ranked, diagnostics):
+        *ranked* is the top-N subset with ``image_outfit_score`` column and
+        re-indexed ``row_id`` starting from 0.
+    """
+    diag = RankingDiagnostics(n_candidates=len(candidates))
+
+    scores: list[float | None] = []
+    for _, row in tqdm(candidates.iterrows(), total=len(candidates), desc="Scoring images"):
+        thumb_rel = row.get("thumbnail_path", "")
+        thumb_path = bundle_dir / thumb_rel if thumb_rel else None
+        if thumb_path is None or not thumb_path.exists():
+            scores.append(None)
+            diag.score_errors += 1
+            continue
+        try:
+            img = Image.open(thumb_path).convert("RGB")
+            s = image_scorer.score_image(img)
+            scores.append(s)
+            diag.all_scores.append(s)
+            diag.n_scored += 1
+        except Exception:
+            scores.append(None)
+            diag.score_errors += 1
+
+    candidates = candidates.copy()
+    candidates["image_outfit_score"] = scores
+
+    # Drop un-scoreable rows, sort descending, take top N
+    scoreable = candidates.dropna(subset=["image_outfit_score"]).copy()
+    scoreable = scoreable.sort_values("image_outfit_score", ascending=False)
+    ranked = scoreable.head(n_export).copy()
+
+    # Re-index row_id
+    ranked["row_id"] = range(len(ranked))
+    ranked = ranked.reset_index(drop=True)
+    diag.n_exported = len(ranked)
+
+    return ranked, diag
+
+
+def rewrite_thumbnails_for_ranked(
+    ranked: pd.DataFrame,
+    bundle_dir: Path,
+) -> pd.DataFrame:
+    """Rename thumbnails to match new row_ids and update paths in *ranked*.
+
+    Operates in-place on the thumbnail directory.  Returns the updated DataFrame.
+    """
+    thumb_dir = bundle_dir / "thumbnails"
+    ranked = ranked.copy()
+    new_paths = []
+    for _, row in ranked.iterrows():
+        old_rel = row["thumbnail_path"]
+        old_path = bundle_dir / old_rel
+        new_name = f"{int(row['row_id']):06d}_{int(row['global_index'])}.jpg"
+        new_rel = f"thumbnails/{new_name}"
+        new_path = bundle_dir / new_rel
+        if old_path.exists() and old_path != new_path:
+            # Use a staging name to avoid collisions
+            stage = thumb_dir / f"_stage_{new_name}"
+            old_path.rename(stage)
+            new_paths.append((stage, new_path, new_rel))
+        else:
+            new_paths.append((None, new_path, new_rel))
+
+    # Finalize staging
+    updated_paths = []
+    for stage, final, rel in new_paths:
+        if stage is not None and stage.exists():
+            stage.rename(final)
+        updated_paths.append(rel)
+
+    ranked["thumbnail_path"] = updated_paths
+
+    # Clean up any leftover thumbnails from candidates not in the top N
+    kept = set(ranked["thumbnail_path"])
+    for f in thumb_dir.iterdir():
+        if f.name.startswith("_stage_"):
+            f.unlink()
+        elif f"thumbnails/{f.name}" not in kept:
+            f.unlink()
+
+    return ranked
+
+
 def export_embeddings(
     *,
     records: pd.DataFrame,
