@@ -1,0 +1,1319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Style Space — Fashion Embedding Explorer</title>
+<script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ─── RESET & TOKENS ─── */
+:root {
+  --bg: #0a0a0b; --surface: #111113; --surface2: #18181b; --surface3: #1f1f23;
+  --border: #28282d; --border2: #38383e;
+  --text: #ece9e4; --text2: #9e9790; --text3: #6a655f;
+  --accent: #c4956a; --accent2: #a07850; --accent-dim: rgba(196,149,106,0.12);
+  --accent-glow: rgba(196,149,106,0.25);
+  --serif: 'Cormorant Garamond', Georgia, serif;
+  --sans: 'DM Sans', -apple-system, sans-serif;
+  --radius: 6px; --radius-lg: 10px;
+  --transition: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; overflow: hidden; }
+body {
+  background: var(--bg); color: var(--text); font-family: var(--sans);
+  font-size: 13px; line-height: 1.5;
+}
+
+/* Grain overlay */
+body::after {
+  content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 9999;
+  opacity: 0.03;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border2); }
+
+/* ─── LOADING SCREEN ─── */
+#loading-screen {
+  position: fixed; inset: 0; z-index: 10000; background: var(--bg);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  transition: opacity 0.8s ease, visibility 0.8s ease;
+}
+#loading-screen.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+#loading-screen h1 {
+  font-family: var(--serif); font-size: 52px; font-weight: 300;
+  letter-spacing: -1px; color: var(--text); margin-bottom: 8px;
+}
+#loading-screen h1 em { font-style: italic; color: var(--accent); }
+#loading-screen .subtitle { color: var(--text3); font-size: 14px; margin-bottom: 48px; }
+.load-items { width: 320px; }
+.load-item {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 12px;
+  font-size: 12px; color: var(--text3); letter-spacing: 0.5px; text-transform: uppercase;
+}
+.load-item .bar { flex: 1; height: 2px; background: var(--border); border-radius: 1px; overflow: hidden; }
+.load-item .bar-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.4s ease; border-radius: 1px; }
+.load-item .check { width: 16px; text-align: right; color: var(--accent); opacity: 0; transition: opacity 0.3s; }
+.load-item.done .check { opacity: 1; }
+.load-item.done .bar-fill { width: 100%; }
+
+/* ─── APP LAYOUT ─── */
+#app { display: none; height: 100vh; flex-direction: column; }
+#app.visible { display: flex; animation: appReveal 0.6s ease; }
+@keyframes appReveal { from { opacity: 0; } to { opacity: 1; } }
+
+/* Top bar */
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 24px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+  background: var(--surface);
+}
+.topbar-brand {
+  font-family: var(--serif); font-size: 22px; font-weight: 300; letter-spacing: -0.5px;
+}
+.topbar-brand em { font-style: italic; color: var(--accent); }
+.topbar-controls { display: flex; align-items: center; gap: 16px; }
+.topbar-stat { text-align: right; }
+.topbar-stat .val { font-size: 16px; font-weight: 600; color: var(--accent); }
+.topbar-stat .lbl { font-size: 10px; color: var(--text3); text-transform: uppercase; letter-spacing: 1px; }
+.color-selector {
+  display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text2);
+}
+.color-selector select {
+  background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+  padding: 5px 10px; border-radius: var(--radius); font-family: var(--sans); font-size: 12px;
+  cursor: pointer; outline: none;
+}
+.color-selector select:focus { border-color: var(--accent); }
+.btn-icon {
+  width: 32px; height: 32px; border-radius: var(--radius); border: 1px solid var(--border);
+  background: var(--surface2); color: var(--text2); cursor: pointer; font-size: 14px;
+  display: flex; align-items: center; justify-content: center; transition: all var(--transition);
+}
+.btn-icon:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Main area */
+.workspace {
+  flex: 1; display: grid; grid-template-columns: 1fr 340px;
+  overflow: hidden; min-height: 0;
+}
+
+/* Map column */
+.map-column { display: flex; flex-direction: column; overflow: hidden; position: relative; }
+#map-container {
+  flex: 1; position: relative; min-height: 0;
+}
+#scatter-plot { width: 100%; height: 100%; }
+
+/* Hover tooltip */
+#hover-card {
+  position: fixed; z-index: 1000; pointer-events: none;
+  display: none; width: 180px;
+  background: var(--surface2); border: 1px solid var(--border2); border-radius: var(--radius-lg);
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5); overflow: hidden;
+  transition: opacity 0.15s ease;
+}
+#hover-card img {
+  width: 100%; height: 140px; object-fit: cover; display: block;
+}
+#hover-card .hover-info {
+  padding: 8px 10px; font-size: 11px;
+}
+#hover-card .hover-caption {
+  color: var(--text); display: -webkit-box; -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical; overflow: hidden; line-height: 1.4;
+}
+#hover-card .hover-cluster {
+  color: var(--accent); font-size: 10px; margin-top: 3px; text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Bottom strip (neighbors + axis) */
+.bottom-strip {
+  flex-shrink: 0; border-top: 1px solid var(--border); background: var(--surface);
+  overflow: hidden; display: flex; flex-direction: column;
+}
+.strip-header {
+  display: flex; align-items: center; gap: 16px; padding: 8px 20px;
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.strip-tab {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text3);
+  cursor: pointer; padding: 4px 0; border-bottom: 1.5px solid transparent; transition: all var(--transition);
+}
+.strip-tab:hover { color: var(--text2); }
+.strip-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Neighbor row */
+.neighbor-row {
+  display: flex; gap: 10px; padding: 10px 20px; overflow-x: auto; flex-shrink: 0;
+  scrollbar-width: thin;
+}
+.neighbor-card {
+  flex-shrink: 0; width: 80px; cursor: pointer; position: relative;
+  border-radius: var(--radius); overflow: hidden; transition: transform var(--transition);
+}
+.neighbor-card:hover { transform: scale(1.05); }
+.neighbor-card img { width: 80px; height: 100px; object-fit: cover; display: block; }
+.neighbor-card .sim-badge {
+  position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.7);
+  font-size: 10px; text-align: center; padding: 2px; color: var(--accent);
+  backdrop-filter: blur(4px);
+}
+
+/* Axis strip */
+.axis-strip { padding: 10px 20px; display: none; }
+.axis-strip.visible { display: block; }
+.axis-endpoints {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 6px; font-size: 11px;
+}
+.axis-endpoints .ep-label { color: var(--accent); font-family: var(--serif); font-size: 14px; font-style: italic; }
+.axis-endpoints .ep-label.neg { color: var(--text3); }
+.axis-rail {
+  position: relative; height: 56px; background: var(--surface2);
+  border-radius: var(--radius); overflow: hidden; margin-bottom: 8px;
+}
+.axis-thumbs {
+  display: flex; height: 100%; position: relative;
+}
+.axis-thumb {
+  flex-shrink: 0; height: 56px; width: 56px; object-fit: cover; cursor: pointer;
+  opacity: 0.7; transition: opacity 0.2s;
+}
+.axis-thumb:hover { opacity: 1; }
+.axis-marker {
+  position: absolute; top: -4px; width: 3px; height: 64px;
+  background: var(--accent); border-radius: 2px; z-index: 2;
+  box-shadow: 0 0 8px var(--accent-glow);
+  transition: left 0.3s ease;
+}
+.axis-histogram {
+  height: 28px; display: flex; align-items: flex-end; gap: 1px;
+}
+.axis-histogram .hist-bar {
+  flex: 1; background: var(--accent-dim); border-radius: 1px 1px 0 0;
+  transition: background 0.2s;
+}
+.axis-extreme-row {
+  display: flex; gap: 8px; margin-top: 8px;
+}
+.axis-extreme-row .section-mini { font-size: 10px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 4px; }
+.extreme-thumb {
+  width: 52px; height: 66px; object-fit: cover; border-radius: 4px; cursor: pointer;
+  border: 1px solid var(--border); transition: border-color 0.2s;
+}
+.extreme-thumb:hover { border-color: var(--accent); }
+
+/* ─── SIDEBAR ─── */
+.sidebar {
+  background: var(--surface); border-left: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.sidebar-scroll { flex: 1; overflow-y: auto; padding: 0; }
+
+/* Selected outfit panel */
+.selected-panel { padding: 20px; }
+.selected-panel .sp-empty {
+  text-align: center; padding: 60px 20px; color: var(--text3);
+  font-family: var(--serif); font-size: 16px; font-style: italic;
+}
+.sp-thumb-wrap {
+  position: relative; border-radius: var(--radius-lg); overflow: hidden;
+  margin-bottom: 16px;
+}
+.sp-thumb {
+  width: 100%; height: 320px; object-fit: cover; display: block;
+}
+.sp-score-badge {
+  position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.6);
+  backdrop-filter: blur(8px); padding: 4px 10px; border-radius: 20px;
+  font-size: 11px; color: var(--accent); border: 1px solid rgba(196,149,106,0.3);
+}
+.sp-caption {
+  font-family: var(--serif); font-size: 17px; font-weight: 400; line-height: 1.4;
+  color: var(--text); margin-bottom: 12px;
+}
+.sp-cluster {
+  display: inline-block; font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+  padding: 3px 10px; border-radius: 20px; margin-bottom: 16px;
+  border: 1px solid var(--border);
+}
+
+/* Axis bars */
+.axis-bars { margin-bottom: 16px; }
+.axis-bar-item { margin-bottom: 8px; }
+.axis-bar-label {
+  display: flex; justify-content: space-between; font-size: 10px; margin-bottom: 3px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.axis-bar-label span:first-child { color: var(--text2); }
+.axis-bar-label span:last-child { color: var(--text3); }
+.axis-bar-track {
+  height: 4px; background: var(--surface3); border-radius: 2px; position: relative; overflow: hidden;
+}
+.axis-bar-fill {
+  height: 100%; border-radius: 2px; transition: width 0.4s ease;
+  background: linear-gradient(90deg, var(--accent2), var(--accent));
+}
+.axis-bar-marker {
+  position: absolute; top: -2px; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent); border: 1.5px solid var(--bg);
+  transform: translateX(-50%); transition: left 0.4s ease;
+}
+
+/* Garment row */
+.garment-row {
+  display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px;
+}
+.garment-chip {
+  position: relative; cursor: pointer; border-radius: var(--radius);
+  overflow: hidden; border: 1.5px solid var(--border); transition: border-color var(--transition);
+}
+.garment-chip:hover { border-color: var(--accent); }
+.garment-chip.selected { border-color: var(--accent); box-shadow: 0 0 12px var(--accent-glow); }
+.garment-chip img { width: 52px; height: 60px; object-fit: cover; display: block; }
+.garment-chip .gc-label {
+  position: absolute; bottom: 0; left: 0; right: 0; font-size: 8px;
+  text-align: center; background: rgba(0,0,0,0.7); padding: 1px 2px;
+  text-transform: uppercase; letter-spacing: 0.5px; color: var(--text2);
+}
+
+/* Sidebar actions */
+.sp-actions { display: flex; gap: 8px; margin-bottom: 16px; }
+.sp-action {
+  flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: transparent; color: var(--text2); font-family: var(--sans); font-size: 11px;
+  cursor: pointer; transition: all var(--transition); text-align: center;
+}
+.sp-action:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+
+/* Cross-category results */
+.cross-cat-panel {
+  display: none; padding: 16px 20px; border-top: 1px solid var(--border);
+}
+.cross-cat-panel.visible { display: block; }
+.cross-cat-panel h3 {
+  font-family: var(--serif); font-size: 16px; font-weight: 400; margin-bottom: 12px;
+  color: var(--text);
+}
+.cross-cat-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+}
+.cross-cat-card {
+  border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border);
+  cursor: pointer; transition: border-color var(--transition);
+}
+.cross-cat-card:hover { border-color: var(--accent); }
+.cross-cat-card img { width: 100%; height: 70px; object-fit: cover; display: block; }
+.cross-cat-card .cc-info { padding: 4px 6px; font-size: 9px; color: var(--text3); }
+.cross-cat-card .cc-sim { color: var(--accent); }
+.cc-add-btn {
+  display: block; width: 100%; margin-top: 4px; padding: 3px;
+  background: transparent; border: 1px solid var(--border); border-radius: 3px;
+  color: var(--text3); font-size: 9px; cursor: pointer; font-family: var(--sans);
+  transition: all var(--transition);
+}
+.cc-add-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Outfit builder */
+.builder-panel {
+  display: none; padding: 16px 20px; border-top: 1px solid var(--border);
+}
+.builder-panel.visible { display: block; }
+.builder-panel h3 {
+  font-family: var(--serif); font-size: 16px; font-weight: 400; margin-bottom: 12px;
+}
+.builder-slots {
+  display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px;
+}
+.builder-slot {
+  width: 60px; text-align: center;
+}
+.builder-slot .slot-img {
+  width: 60px; height: 70px; border-radius: var(--radius); border: 1.5px dashed var(--border);
+  display: flex; align-items: center; justify-content: center; font-size: 18px; color: var(--text3);
+  overflow: hidden; position: relative;
+}
+.builder-slot .slot-img img { width: 100%; height: 100%; object-fit: cover; }
+.builder-slot .slot-img .slot-remove {
+  position: absolute; top: 2px; right: 2px; width: 14px; height: 14px;
+  border-radius: 50%; background: rgba(0,0,0,0.7); color: var(--text2);
+  font-size: 9px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity 0.2s;
+}
+.builder-slot .slot-img:hover .slot-remove { opacity: 1; }
+.builder-slot .slot-label {
+  font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text3); margin-top: 3px;
+}
+.builder-slot.filled .slot-img { border-style: solid; border-color: var(--accent); }
+.coherence-chart { margin-top: 8px; }
+.coherence-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 10px; }
+.coherence-row .co-label { width: 70px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.coherence-bars { flex: 1; display: flex; gap: 2px; height: 10px; align-items: center; position: relative; }
+.coherence-pip {
+  width: 8px; height: 8px; border-radius: 50%; position: absolute;
+  transform: translateX(-50%); border: 1px solid var(--bg);
+}
+.builder-actions { margin-top: 12px; display: flex; gap: 8px; }
+.builder-actions button {
+  padding: 6px 14px; border-radius: var(--radius); font-family: var(--sans);
+  font-size: 11px; cursor: pointer; transition: all var(--transition);
+}
+.btn-clear { background: transparent; border: 1px solid var(--border); color: var(--text3); }
+.btn-clear:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Dataset info (in sidebar bottom) */
+.dataset-info {
+  padding: 16px 20px; border-top: 1px solid var(--border); flex-shrink: 0;
+}
+.dataset-info h3 {
+  font-family: var(--serif); font-size: 14px; font-weight: 400; margin-bottom: 8px; color: var(--text2);
+}
+.di-row { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 3px; }
+.di-row .di-label { color: var(--text3); }
+.di-row .di-val { color: var(--text2); }
+.cat-bars { margin-top: 8px; }
+.cat-bar-item { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.cat-bar-item .cb-label { width: 44px; font-size: 10px; color: var(--text3); text-transform: uppercase; }
+.cat-bar-item .cb-track { flex: 1; height: 3px; background: var(--surface3); border-radius: 2px; overflow: hidden; }
+.cat-bar-item .cb-fill { height: 100%; background: var(--accent); border-radius: 2px; }
+.cat-bar-item .cb-val { width: 32px; font-size: 10px; color: var(--text3); text-align: right; }
+
+/* Keyboard hint */
+.kbd-hint {
+  position: fixed; bottom: 12px; left: 12px; z-index: 100;
+  display: flex; gap: 10px; font-size: 10px; color: var(--text3);
+}
+.kbd-hint kbd {
+  display: inline-block; padding: 1px 5px; border: 1px solid var(--border);
+  border-radius: 3px; font-family: var(--sans); font-size: 10px; color: var(--text3);
+}
+</style>
+</head>
+<body>
+
+<!-- Loading screen -->
+<div id="loading-screen">
+  <h1>Style <em>Space</em></h1>
+  <div class="subtitle">Fashion Embedding Explorer</div>
+  <div class="load-items" id="load-items"></div>
+</div>
+
+<!-- App -->
+<div id="app">
+  <!-- Top bar -->
+  <div class="topbar">
+    <div class="topbar-brand">Style <em>Space</em></div>
+    <div class="topbar-controls">
+      <div class="color-selector">
+        <span>Color by</span>
+        <select id="color-mode"></select>
+      </div>
+      <button class="btn-icon" id="btn-random" title="Random outfit (R)">&#x2684;</button>
+      <button class="btn-icon" id="btn-info" title="Dataset info">&#x2139;</button>
+    </div>
+  </div>
+
+  <!-- Main workspace -->
+  <div class="workspace">
+    <!-- Left: map + bottom strips -->
+    <div class="map-column">
+      <div id="map-container">
+        <div id="scatter-plot"></div>
+        <div id="hover-card">
+          <img id="hover-img" src="" alt="">
+          <div class="hover-info">
+            <div class="hover-caption" id="hover-caption"></div>
+            <div class="hover-cluster" id="hover-cluster"></div>
+          </div>
+        </div>
+      </div>
+      <div class="bottom-strip" id="bottom-strip">
+        <div class="strip-header">
+          <div class="strip-tab active" data-strip="neighbors">Nearest Neighbors</div>
+          <div class="strip-tab" data-strip="axis">Style Axis</div>
+          <div class="strip-tab" data-strip="builder">Outfit Builder</div>
+        </div>
+        <div id="strip-neighbors" class="neighbor-row"></div>
+        <div id="strip-axis" class="axis-strip"></div>
+        <div id="strip-builder-bottom" style="display:none;"></div>
+      </div>
+    </div>
+
+    <!-- Right: sidebar -->
+    <div class="sidebar">
+      <div class="sidebar-scroll">
+        <div class="selected-panel" id="selected-panel">
+          <div class="sp-empty">Click a point on the map<br>to explore an outfit</div>
+        </div>
+        <div class="cross-cat-panel" id="cross-cat-panel"></div>
+        <div class="builder-panel" id="builder-panel">
+          <h3>Outfit Builder</h3>
+          <div class="builder-slots" id="builder-slots"></div>
+          <div class="coherence-chart" id="coherence-chart"></div>
+          <div class="builder-actions">
+            <button class="btn-clear" id="btn-clear-builder">Clear all</button>
+          </div>
+        </div>
+      </div>
+      <div class="dataset-info" id="dataset-info"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Keyboard hints -->
+<div class="kbd-hint" id="kbd-hint" style="display:none;">
+  <span><kbd>&larr;</kbd><kbd>&rarr;</kbd> Browse</span>
+  <span><kbd>R</kbd> Random</span>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════
+   DATA & STATE
+   ═══════════════════════════════════════════════════════════════════ */
+const DATA = {};
+const STATE = {
+  selectedId: null,
+  colorMode: 'cluster',
+  activeStrip: 'neighbors',
+  selectedGarment: null,
+  builder: {},  // category -> {garment_id, outfit_id, crop_path, axisScores}
+  garmentNeighborsLoaded: false,
+};
+
+const CLUSTER_COLORS = [
+  '#c4956a', '#7ca5c4', '#c47c7c', '#8bc49b', '#c4b07c',
+  '#9b8bc4', '#c49bb0', '#6ac4c4'
+];
+
+const CLUSTER_NAMES = [
+  'Urban Edge', 'Modern Minimal', 'Street Luxe', 'Power Tailored',
+  'Boho Eclectic', 'Avant-Garde', 'Classic Refined', 'Casual Chic'
+];
+
+const AXIS_LABELS = {
+  minimalist_vs_maximalist: ['Minimalist', 'Maximalist'],
+  formal_vs_casual: ['Formal', 'Casual'],
+  streetwear_vs_classic: ['Streetwear', 'Classic'],
+  colorful_vs_neutral: ['Colorful', 'Neutral'],
+  polished_vs_rough: ['Polished', 'Rough'],
+  sporty_vs_dressy: ['Sporty', 'Dressy'],
+};
+
+function axisShortName(axis) {
+  return axis.replace(/_vs_/g, ' / ').replace(/_/g, ' ');
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   LOADING
+   ═══════════════════════════════════════════════════════════════════ */
+const FILES_TO_LOAD = [
+  { key: 'config', file: 'dashboard_data/config.json', label: 'Configuration' },
+  { key: 'projection', file: 'dashboard_data/projection.json', label: 'Projections' },
+  { key: 'axis_scores', file: 'dashboard_data/axis_scores.json', label: 'Axis Scores' },
+  { key: 'axis_sorted', file: 'dashboard_data/axis_sorted.json', label: 'Axis Rankings' },
+  { key: 'neighbors', file: 'dashboard_data/neighbors.json', label: 'Neighbors' },
+  { key: 'garments', file: 'dashboard_data/garments.json', label: 'Garments' },
+  { key: 'stats', file: 'dashboard_data/stats.json', label: 'Statistics' },
+  { key: 'thumb_index', file: 'dashboard_data/thumb_index.json', label: 'Thumbnails' },
+];
+
+function buildLoadingUI() {
+  const container = document.getElementById('load-items');
+  FILES_TO_LOAD.forEach(f => {
+    const div = document.createElement('div');
+    div.className = 'load-item';
+    div.id = `load-${f.key}`;
+    div.innerHTML = `<span style="width:90px">${f.label}</span><div class="bar"><div class="bar-fill"></div></div><span class="check">&#x2713;</span>`;
+    container.appendChild(div);
+  });
+}
+
+async function loadFile(info) {
+  const el = document.getElementById(`load-${info.key}`);
+  const fill = el.querySelector('.bar-fill');
+  fill.style.width = '30%';
+  try {
+    const resp = await fetch(info.file);
+    fill.style.width = '70%';
+    const data = await resp.json();
+    fill.style.width = '100%';
+    el.classList.add('done');
+    DATA[info.key] = data;
+  } catch (e) {
+    console.error(`Failed to load ${info.file}:`, e);
+    fill.style.background = '#c46a6a';
+    fill.style.width = '100%';
+  }
+}
+
+async function loadAll() {
+  buildLoadingUI();
+  // Stagger loading for visual effect
+  const promises = FILES_TO_LOAD.map((f, i) =>
+    new Promise(resolve => setTimeout(() => loadFile(f).then(resolve), i * 120))
+  );
+  await Promise.all(promises);
+
+  // Build indices
+  buildIndices();
+
+  // Small delay for polish
+  await new Promise(r => setTimeout(r, 400));
+  document.getElementById('loading-screen').classList.add('hidden');
+  document.getElementById('app').classList.add('visible');
+  document.getElementById('kbd-hint').style.display = 'flex';
+
+  initApp();
+
+  // Check URL hash
+  const hash = window.location.hash;
+  const m = hash.match(/outfit=(\d+)/);
+  if (m) selectOutfit(parseInt(m[1]));
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   INDICES
+   ═══════════════════════════════════════════════════════════════════ */
+function buildIndices() {
+  // Build garment lookup by outfit_id
+  DATA.garmentsByOutfit = {};
+  if (DATA.garments) {
+    DATA.garments.forEach(g => {
+      if (!DATA.garmentsByOutfit[g.outfit_id]) DATA.garmentsByOutfit[g.outfit_id] = [];
+      DATA.garmentsByOutfit[g.outfit_id].push(g);
+    });
+  }
+  // Precompute axis min/max for normalization
+  DATA.axisRange = {};
+  if (DATA.axis_scores) {
+    for (const [axis, scores] of Object.entries(DATA.axis_scores)) {
+      let min = Infinity, max = -Infinity;
+      scores.forEach(v => { if (v < min) min = v; if (v > max) max = v; });
+      DATA.axisRange[axis] = { min, max, range: max - min || 1 };
+    }
+  }
+}
+
+function thumbUrl(rowId) {
+  const fn = DATA.thumb_index[String(rowId)];
+  return fn ? `dashboard_data/thumbnails/${fn}` : '';
+}
+
+function cropUrl(cropPath) {
+  return `dashboard_data/${cropPath}`;
+}
+
+function normalizeAxisScore(axis, value) {
+  const r = DATA.axisRange[axis];
+  return (value - r.min) / r.range;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   INIT
+   ═══════════════════════════════════════════════════════════════════ */
+function initApp() {
+  buildColorSelector();
+  buildMap();
+  buildDatasetInfo();
+  initBuilderSlots();
+  bindEvents();
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   COLOR SELECTOR
+   ═══════════════════════════════════════════════════════════════════ */
+function buildColorSelector() {
+  const sel = document.getElementById('color-mode');
+  sel.innerHTML = '<option value="cluster">Cluster</option>';
+  DATA.config.axes.forEach(axis => {
+    const opt = document.createElement('option');
+    opt.value = axis;
+    opt.textContent = axisShortName(axis);
+    sel.appendChild(opt);
+  });
+  sel.addEventListener('change', () => {
+    STATE.colorMode = sel.value;
+    updateMapColors();
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   MAP
+   ═══════════════════════════════════════════════════════════════════ */
+let plotDiv;
+
+function getMapColors() {
+  const proj = DATA.projection;
+  if (STATE.colorMode === 'cluster') {
+    return proj.map(p => CLUSTER_COLORS[p.cluster_id % CLUSTER_COLORS.length]);
+  } else {
+    const scores = DATA.axis_scores[STATE.colorMode];
+    const range = DATA.axisRange[STATE.colorMode];
+    return scores.map(v => {
+      const t = (v - range.min) / range.range;
+      // Warm gradient: dark teal -> gold
+      const r = Math.round(70 + t * 126);
+      const g = Math.round(100 + t * 49);
+      const b = Math.round(120 - t * 14);
+      return `rgb(${r},${g},${b})`;
+    });
+  }
+}
+
+function getPointSizes() {
+  const n = DATA.projection.length;
+  const sizes = new Array(n).fill(6);
+  if (STATE.selectedId !== null) sizes[STATE.selectedId] = 12;
+  // Highlight neighbors
+  if (STATE.selectedId !== null && DATA.neighbors[String(STATE.selectedId)]) {
+    DATA.neighbors[String(STATE.selectedId)].forEach(nb => {
+      if (nb.row_id < n) sizes[nb.row_id] = 8;
+    });
+  }
+  return sizes;
+}
+
+function getPointOpacities() {
+  const n = DATA.projection.length;
+  const opacities = new Array(n).fill(0.7);
+  if (STATE.selectedId !== null) {
+    opacities[STATE.selectedId] = 1;
+    if (DATA.neighbors[String(STATE.selectedId)]) {
+      DATA.neighbors[String(STATE.selectedId)].forEach(nb => {
+        if (nb.row_id < n) opacities[nb.row_id] = 0.95;
+      });
+    }
+  }
+  return opacities;
+}
+
+function buildMap() {
+  plotDiv = document.getElementById('scatter-plot');
+  const proj = DATA.projection;
+  const xs = proj.map(p => p.x);
+  const ys = proj.map(p => p.y);
+  const colors = getMapColors();
+  const customdata = proj.map(p => [p.row_id, p.cluster_id, p.caption]);
+
+  const trace = {
+    x: xs, y: ys,
+    mode: 'markers',
+    type: 'scattergl',
+    marker: {
+      size: getPointSizes(),
+      color: colors,
+      opacity: getPointOpacities(),
+      line: { width: 0 },
+    },
+    customdata: customdata,
+    hoverinfo: 'none',
+  };
+
+  // Cluster label annotations
+  const annotations = [];
+  if (DATA.stats.cluster_centers) {
+    for (const [cid, info] of Object.entries(DATA.stats.cluster_centers)) {
+      annotations.push({
+        x: info.cx, y: info.cy,
+        text: CLUSTER_NAMES[parseInt(cid)] || info.label,
+        showarrow: false,
+        font: { family: 'Cormorant Garamond, serif', size: 13, color: 'rgba(236,233,228,0.45)' },
+      });
+    }
+  }
+
+  const layout = {
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor: 'rgba(0,0,0,0)',
+    margin: { l: 0, r: 0, t: 0, b: 0 },
+    xaxis: { visible: false, fixedrange: false },
+    yaxis: { visible: false, fixedrange: false, scaleanchor: 'x' },
+    dragmode: 'pan',
+    annotations: annotations,
+    hovermode: 'closest',
+  };
+
+  const config = {
+    displayModeBar: false,
+    responsive: true,
+    scrollZoom: true,
+  };
+
+  Plotly.newPlot(plotDiv, [trace], layout, config);
+
+  // Hover
+  const hoverCard = document.getElementById('hover-card');
+  const hoverImg = document.getElementById('hover-img');
+  const hoverCaption = document.getElementById('hover-caption');
+  const hoverCluster = document.getElementById('hover-cluster');
+
+  let hoverRaf = null;
+  let mouseX = 0, mouseY = 0;
+
+  // Track mouse globally — scattergl's evt.event often lacks coordinates
+  document.addEventListener('mousemove', (e) => { mouseX = e.clientX; mouseY = e.clientY; });
+
+  plotDiv.on('plotly_hover', (evt) => {
+    if (!evt.points || !evt.points[0]) return;
+    const pt = evt.points[0];
+    const rowId = pt.customdata[0];
+    const clusterId = pt.customdata[1];
+    const caption = pt.customdata[2];
+
+    hoverImg.src = thumbUrl(rowId);
+    hoverCaption.textContent = caption;
+    hoverCluster.textContent = CLUSTER_NAMES[clusterId] || `Cluster ${clusterId}`;
+    hoverCluster.style.color = CLUSTER_COLORS[clusterId % CLUSTER_COLORS.length];
+    hoverCard.style.display = 'block';
+
+    const updatePos = () => {
+      let left = mouseX + 16;
+      let top = mouseY - 80;
+      if (left + 190 > window.innerWidth) left = mouseX - 200;
+      if (top < 8) top = 8;
+      if (top + 220 > window.innerHeight) top = window.innerHeight - 220;
+      hoverCard.style.left = left + 'px';
+      hoverCard.style.top = top + 'px';
+    };
+    if (hoverRaf) cancelAnimationFrame(hoverRaf);
+    hoverRaf = requestAnimationFrame(updatePos);
+  });
+
+  plotDiv.addEventListener('mousemove', () => {
+    if (hoverCard.style.display === 'block') {
+      if (hoverRaf) cancelAnimationFrame(hoverRaf);
+      hoverRaf = requestAnimationFrame(() => {
+        let left = mouseX + 16;
+        let top = mouseY - 80;
+        if (left + 190 > window.innerWidth) left = mouseX - 200;
+        if (top < 8) top = 8;
+        hoverCard.style.left = left + 'px';
+        hoverCard.style.top = top + 'px';
+      });
+    }
+  });
+
+  plotDiv.on('plotly_unhover', () => {
+    hoverCard.style.display = 'none';
+    if (hoverRaf) cancelAnimationFrame(hoverRaf);
+  });
+
+  // Click
+  plotDiv.on('plotly_click', (evt) => {
+    if (!evt.points || !evt.points[0]) return;
+    const rowId = evt.points[0].customdata[0];
+    selectOutfit(rowId);
+  });
+}
+
+function updateMapColors() {
+  const colors = getMapColors();
+  Plotly.restyle(plotDiv, { 'marker.color': [colors] }, [0]);
+}
+
+function updateMapSelection() {
+  Plotly.restyle(plotDiv, {
+    'marker.size': [getPointSizes()],
+    'marker.opacity': [getPointOpacities()],
+  }, [0]);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SELECT OUTFIT
+   ═══════════════════════════════════════════════════════════════════ */
+function selectOutfit(rowId) {
+  if (rowId < 0 || rowId >= DATA.projection.length) return;
+  STATE.selectedId = rowId;
+  STATE.selectedGarment = null;
+
+  // Update URL hash
+  history.replaceState(null, '', `#outfit=${rowId}`);
+
+  updateMapSelection();
+  renderSelectedPanel(rowId);
+  renderNeighborRow(rowId);
+  renderAxisStrip(rowId);
+  hideCrossCategory();
+}
+
+function renderSelectedPanel(rowId) {
+  const p = DATA.projection[rowId];
+  const panel = document.getElementById('selected-panel');
+  const garments = DATA.garmentsByOutfit[rowId] || [];
+  const axes = DATA.config.axes;
+
+  let axisBarsHtml = '';
+  axes.forEach(axis => {
+    const score = DATA.axis_scores[axis][rowId];
+    const norm = normalizeAxisScore(axis, score);
+    const pct = (norm * 100).toFixed(0);
+    const labels = AXIS_LABELS[axis] || [axis, ''];
+    axisBarsHtml += `
+      <div class="axis-bar-item" data-axis="${axis}" style="cursor:pointer">
+        <div class="axis-bar-label"><span>${labels[0]} / ${labels[1]}</span><span>${score.toFixed(3)}</span></div>
+        <div class="axis-bar-track">
+          <div class="axis-bar-fill" style="width:${pct}%"></div>
+          <div class="axis-bar-marker" style="left:${pct}%"></div>
+        </div>
+      </div>`;
+  });
+
+  let garmentHtml = '';
+  garments.forEach(g => {
+    garmentHtml += `
+      <div class="garment-chip" data-garment-id="${g.garment_id}" data-category="${g.category}" data-crop="${g.crop_path}">
+        <img src="dashboard_data/${g.crop_path}" alt="${g.category}" loading="lazy">
+        <div class="gc-label">${g.category}</div>
+      </div>`;
+  });
+
+  const clusterColor = CLUSTER_COLORS[p.cluster_id % CLUSTER_COLORS.length];
+  const clusterName = CLUSTER_NAMES[p.cluster_id] || p.cluster_label;
+
+  panel.innerHTML = `
+    <div class="sp-thumb-wrap">
+      <img class="sp-thumb" src="${thumbUrl(rowId)}" alt="Outfit ${rowId}">
+      ${p.outfit_score != null ? `<div class="sp-score-badge">Score ${p.outfit_score.toFixed(3)}</div>` : ''}
+    </div>
+    <div class="sp-caption">${escapeHtml(p.caption)}</div>
+    <div class="sp-cluster" style="color:${clusterColor};border-color:${clusterColor}40">
+      ${clusterName}
+    </div>
+    <div class="axis-bars">${axisBarsHtml}</div>
+    ${garments.length ? `<div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:6px;">Detected Garments</div>` : ''}
+    <div class="garment-row">${garmentHtml}</div>
+  `;
+
+  // Bind axis bar clicks
+  panel.querySelectorAll('.axis-bar-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const axis = el.dataset.axis;
+      document.getElementById('color-mode').value = axis;
+      STATE.colorMode = axis;
+      updateMapColors();
+      // Switch to axis strip
+      switchStrip('axis');
+      renderAxisStrip(STATE.selectedId);
+    });
+  });
+
+  // Bind garment clicks
+  panel.querySelectorAll('.garment-chip').forEach(el => {
+    el.addEventListener('click', () => {
+      panel.querySelectorAll('.garment-chip').forEach(c => c.classList.remove('selected'));
+      el.classList.add('selected');
+      STATE.selectedGarment = parseInt(el.dataset.garmentId);
+      showCrossCategory(STATE.selectedGarment, el.dataset.category, el.dataset.crop);
+    });
+  });
+}
+
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   NEIGHBORS
+   ═══════════════════════════════════════════════════════════════════ */
+function renderNeighborRow(rowId) {
+  const container = document.getElementById('strip-neighbors');
+  const nbs = DATA.neighbors[String(rowId)] || [];
+
+  container.innerHTML = nbs.map(nb => `
+    <div class="neighbor-card" data-row-id="${nb.row_id}">
+      <img src="${thumbUrl(nb.row_id)}" alt="Neighbor" loading="lazy">
+      <div class="sim-badge">${(nb.similarity * 100).toFixed(0)}%</div>
+    </div>
+  `).join('');
+
+  container.querySelectorAll('.neighbor-card').forEach(card => {
+    card.addEventListener('click', () => {
+      selectOutfit(parseInt(card.dataset.rowId));
+    });
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   AXIS STRIP
+   ═══════════════════════════════════════════════════════════════════ */
+function renderAxisStrip(rowId) {
+  const container = document.getElementById('strip-axis');
+  const axis = STATE.colorMode !== 'cluster' ? STATE.colorMode : DATA.config.axes[0];
+  const sorted = DATA.axis_sorted[axis];
+  const labels = AXIS_LABELS[axis] || [axis, ''];
+  const hist = DATA.stats.axis_histograms[axis];
+
+  // Sample ~80 evenly spaced from sorted
+  const sampleCount = 80;
+  const step = Math.max(1, Math.floor(sorted.length / sampleCount));
+  const sampled = [];
+  for (let i = 0; i < sorted.length; i += step) sampled.push(sorted[i]);
+
+  // Find position of selected in sorted
+  const selectedIdx = sorted.indexOf(rowId);
+  const markerPct = selectedIdx >= 0 ? ((selectedIdx / (sorted.length - 1)) * 100) : 50;
+
+  // Histogram bars
+  const maxCount = Math.max(...hist.counts);
+  const histHtml = hist.counts.map(c => {
+    const h = Math.max(1, (c / maxCount) * 28);
+    return `<div class="hist-bar" style="height:${h}px"></div>`;
+  }).join('');
+
+  // Extreme examples (top 4 / bottom 4)
+  const bottom4 = sorted.slice(0, 4);
+  const top4 = sorted.slice(-4).reverse();
+
+  container.innerHTML = `
+    <div class="axis-endpoints">
+      <div class="ep-label">&larr; ${labels[0]}</div>
+      <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:1px">${axisShortName(axis)}</div>
+      <div class="ep-label neg">${labels[1]} &rarr;</div>
+    </div>
+    <div class="axis-rail">
+      <div class="axis-marker" style="left:${markerPct}%"></div>
+      <div class="axis-thumbs">
+        ${sampled.map(id => `<img class="axis-thumb" src="${thumbUrl(id)}" data-row-id="${id}" loading="lazy">`).join('')}
+      </div>
+    </div>
+    <div class="axis-histogram">${histHtml}</div>
+    <div class="axis-extreme-row">
+      <div style="flex:1">
+        <div class="section-mini">${labels[0]}</div>
+        <div style="display:flex;gap:4px;">
+          ${bottom4.map(id => `<img class="extreme-thumb" src="${thumbUrl(id)}" data-row-id="${id}" loading="lazy">`).join('')}
+        </div>
+      </div>
+      <div style="flex:1;text-align:right">
+        <div class="section-mini">${labels[1]}</div>
+        <div style="display:flex;gap:4px;justify-content:flex-end;">
+          ${top4.map(id => `<img class="extreme-thumb" src="${thumbUrl(id)}" data-row-id="${id}" loading="lazy">`).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Click to select
+  container.querySelectorAll('[data-row-id]').forEach(el => {
+    el.addEventListener('click', () => selectOutfit(parseInt(el.dataset.rowId)));
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   STRIP TABS
+   ═══════════════════════════════════════════════════════════════════ */
+function switchStrip(name) {
+  STATE.activeStrip = name;
+  document.querySelectorAll('.strip-tab').forEach(t => t.classList.toggle('active', t.dataset.strip === name));
+  document.getElementById('strip-neighbors').style.display = name === 'neighbors' ? 'flex' : 'none';
+  const axisStrip = document.getElementById('strip-axis');
+  axisStrip.classList.toggle('visible', name === 'axis');
+  axisStrip.style.display = name === 'axis' ? 'block' : 'none';
+  document.getElementById('strip-builder-bottom').style.display = name === 'builder' ? 'block' : 'none';
+
+  // Show/hide builder panel in sidebar
+  document.getElementById('builder-panel').classList.toggle('visible', name === 'builder');
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   CROSS-CATEGORY RETRIEVAL
+   ═══════════════════════════════════════════════════════════════════ */
+let garmentNeighborsLoadPromise = null;
+
+async function ensureGarmentNeighbors() {
+  if (DATA.garment_neighbors_compact) return;
+  if (garmentNeighborsLoadPromise) return garmentNeighborsLoadPromise;
+  garmentNeighborsLoadPromise = fetch('dashboard_data/garment_neighbors_compact.json')
+    .then(r => r.json())
+    .then(d => { DATA.garment_neighbors_compact = d; });
+  return garmentNeighborsLoadPromise;
+}
+
+async function showCrossCategory(garmentId, category, cropPath) {
+  const panel = document.getElementById('cross-cat-panel');
+  panel.classList.add('visible');
+  panel.innerHTML = `<h3>Cross-Category Results</h3><div style="color:var(--text3);font-size:12px;">Loading garment neighbors...</div>`;
+
+  await ensureGarmentNeighbors();
+
+  const neighbors = DATA.garment_neighbors_compact[String(garmentId)];
+  if (!neighbors) {
+    panel.innerHTML = `<h3>Cross-Category Results</h3><div style="color:var(--text3);font-size:12px;">No cross-category data for this garment.</div>`;
+    return;
+  }
+
+  let html = `<h3>Similar across categories</h3>`;
+  const categories = Object.keys(neighbors);
+
+  categories.forEach(cat => {
+    const items = neighbors[cat].slice(0, 6);
+    if (!items.length) return;
+    html += `<div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.8px;margin:10px 0 6px;">${cat}</div>`;
+    html += `<div class="cross-cat-grid">`;
+    items.forEach(item => {
+      html += `
+        <div class="cross-cat-card">
+          <img src="dashboard_data/${item.crop_path}" alt="${cat}" loading="lazy">
+          <div class="cc-info">
+            <span class="cc-sim">${(item.similarity * 100).toFixed(0)}%</span>
+            &middot; Outfit ${item.outfit_id}
+          </div>
+          <button class="cc-add-btn" data-garment-id="${item.garment_id}" data-outfit-id="${item.outfit_id}" data-category="${cat}" data-crop="${item.crop_path}">+ Add to builder</button>
+        </div>`;
+    });
+    html += `</div>`;
+  });
+
+  panel.innerHTML = html;
+
+  // Bind "add to builder" buttons
+  panel.querySelectorAll('.cc-add-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      addToBuilder(btn.dataset.category, {
+        garment_id: parseInt(btn.dataset.garmentId),
+        outfit_id: parseInt(btn.dataset.outfitId),
+        crop_path: btn.dataset.crop,
+      });
+    });
+  });
+
+  // Bind card clicks to navigate to outfit
+  panel.querySelectorAll('.cross-cat-card').forEach(card => {
+    card.addEventListener('click', (e) => {
+      if (e.target.classList.contains('cc-add-btn')) return;
+      const outfitId = parseInt(card.querySelector('.cc-info').textContent.match(/Outfit (\d+)/)?.[1]);
+      if (!isNaN(outfitId)) selectOutfit(outfitId);
+    });
+  });
+}
+
+function hideCrossCategory() {
+  document.getElementById('cross-cat-panel').classList.remove('visible');
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   OUTFIT BUILDER
+   ═══════════════════════════════════════════════════════════════════ */
+const BUILDER_CATEGORIES = ['top', 'bottom', 'outer', 'dress', 'shoes', 'bag', 'hat'];
+
+function initBuilderSlots() {
+  const container = document.getElementById('builder-slots');
+  container.innerHTML = BUILDER_CATEGORIES.map(cat => `
+    <div class="builder-slot" data-category="${cat}" id="builder-slot-${cat}">
+      <div class="slot-img"><span>+</span></div>
+      <div class="slot-label">${cat}</div>
+    </div>
+  `).join('');
+}
+
+function addToBuilder(category, garmentInfo) {
+  // Get axis scores for the source outfit
+  const axisScores = {};
+  DATA.config.axes.forEach(axis => {
+    axisScores[axis] = DATA.axis_scores[axis][garmentInfo.outfit_id];
+  });
+  garmentInfo.axisScores = axisScores;
+
+  STATE.builder[category] = garmentInfo;
+  renderBuilder();
+
+  // Auto-switch to builder strip
+  switchStrip('builder');
+}
+
+function renderBuilder() {
+  BUILDER_CATEGORIES.forEach(cat => {
+    const slot = document.getElementById(`builder-slot-${cat}`);
+    const item = STATE.builder[cat];
+    const imgDiv = slot.querySelector('.slot-img');
+    if (item) {
+      slot.classList.add('filled');
+      imgDiv.innerHTML = `
+        <img src="dashboard_data/${item.crop_path}" alt="${cat}">
+        <div class="slot-remove" data-category="${cat}">&times;</div>
+      `;
+      imgDiv.querySelector('.slot-remove').addEventListener('click', (e) => {
+        e.stopPropagation();
+        delete STATE.builder[cat];
+        renderBuilder();
+      });
+    } else {
+      slot.classList.remove('filled');
+      imgDiv.innerHTML = '<span>+</span>';
+    }
+  });
+
+  renderCoherenceChart();
+}
+
+function renderCoherenceChart() {
+  const chart = document.getElementById('coherence-chart');
+  const items = Object.values(STATE.builder);
+  if (items.length < 2) {
+    chart.innerHTML = '<div style="font-size:11px;color:var(--text3);font-style:italic;">Add 2+ garments to see coherence analysis</div>';
+    return;
+  }
+
+  const catColors = {
+    top: '#c4956a', bottom: '#7ca5c4', outer: '#8bc49b', dress: '#c49bb0',
+    shoes: '#c4b07c', bag: '#9b8bc4', hat: '#c47c7c'
+  };
+
+  let html = '<div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.8px;margin-bottom:8px;">Style Coherence</div>';
+
+  DATA.config.axes.forEach(axis => {
+    const labels = AXIS_LABELS[axis] || [axis, ''];
+    html += `<div class="coherence-row"><div class="co-label">${labels[0]}</div><div class="coherence-bars">`;
+    // Background bar
+    html += `<div style="position:absolute;left:0;right:0;top:4px;height:2px;background:var(--surface3);border-radius:1px;"></div>`;
+    // One pip per builder item
+    Object.entries(STATE.builder).forEach(([cat, item]) => {
+      const norm = normalizeAxisScore(axis, item.axisScores[axis]) * 100;
+      const color = catColors[cat] || '#888';
+      html += `<div class="coherence-pip" style="left:${norm}%;background:${color}" title="${cat}"></div>`;
+    });
+    html += `</div></div>`;
+  });
+
+  // Compute spread metric
+  let totalSpread = 0;
+  DATA.config.axes.forEach(axis => {
+    const vals = items.map(it => normalizeAxisScore(axis, it.axisScores[axis]));
+    const spread = Math.max(...vals) - Math.min(...vals);
+    totalSpread += spread;
+  });
+  const avgSpread = totalSpread / DATA.config.axes.length;
+  const coherenceLabel = avgSpread < 0.2 ? 'Very Coherent' : avgSpread < 0.4 ? 'Coherent' : avgSpread < 0.6 ? 'Mixed' : 'Eclectic';
+  const coherenceColor = avgSpread < 0.3 ? 'var(--green, #6ac48b)' : avgSpread < 0.5 ? 'var(--accent)' : 'var(--red, #c46a6a)';
+
+  html += `<div style="margin-top:8px;font-size:12px;color:${coherenceColor};font-family:var(--serif);font-style:italic;">${coherenceLabel}</div>`;
+
+  chart.innerHTML = html;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   DATASET INFO
+   ═══════════════════════════════════════════════════════════════════ */
+function buildDatasetInfo() {
+  const el = document.getElementById('dataset-info');
+  const cfg = DATA.config;
+  const stats = DATA.stats;
+  const catDist = stats.category_distribution || {};
+  const totalGarments = Object.values(catDist).reduce((a, b) => a + b, 0);
+  const maxCat = Math.max(...Object.values(catDist));
+
+  let catHtml = '';
+  Object.entries(catDist).sort((a, b) => b[1] - a[1]).forEach(([cat, count]) => {
+    const pct = (count / maxCat * 100).toFixed(0);
+    catHtml += `
+      <div class="cat-bar-item">
+        <div class="cb-label">${cat}</div>
+        <div class="cb-track"><div class="cb-fill" style="width:${pct}%"></div></div>
+        <div class="cb-val">${count.toLocaleString()}</div>
+      </div>`;
+  });
+
+  el.innerHTML = `
+    <h3>Dataset</h3>
+    <div class="di-row"><span class="di-label">Outfits</span><span class="di-val">${cfg.n_images.toLocaleString()}</span></div>
+    <div class="di-row"><span class="di-label">Garments</span><span class="di-val">${cfg.n_garments.toLocaleString()}</span></div>
+    <div class="di-row"><span class="di-label">Embedding</span><span class="di-val">${cfg.embedding_dim}d</span></div>
+    <div class="di-row"><span class="di-label">Clusters</span><span class="di-val">${cfg.n_clusters}</span></div>
+    <div class="di-row"><span class="di-label">Style Axes</span><span class="di-val">${cfg.axes.length}</span></div>
+    <div class="cat-bars" style="margin-top:8px;">${catHtml}</div>
+    <div style="margin-top:8px;font-size:10px;color:var(--text3);line-height:1.5;">
+      CLIP reranked from ${cfg.clip_reranking?.n_candidates?.toLocaleString() || '?'} candidates.
+      Prompt-direction axes via ${cfg.axis_info?.clip_model || 'CLIP'}.
+    </div>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   EVENTS
+   ═══════════════════════════════════════════════════════════════════ */
+function bindEvents() {
+  // Strip tabs
+  document.querySelectorAll('.strip-tab').forEach(tab => {
+    tab.addEventListener('click', () => switchStrip(tab.dataset.strip));
+  });
+
+  // Random
+  document.getElementById('btn-random').addEventListener('click', randomOutfit);
+
+  // Info toggle
+  document.getElementById('btn-info').addEventListener('click', () => {
+    const info = document.getElementById('dataset-info');
+    info.style.display = info.style.display === 'none' ? 'block' : (info.style.display === 'block' ? 'none' : 'block');
+  });
+
+  // Clear builder
+  document.getElementById('btn-clear-builder').addEventListener('click', () => {
+    STATE.builder = {};
+    renderBuilder();
+  });
+
+  // Keyboard
+  document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    if (e.key === 'r' || e.key === 'R') {
+      e.preventDefault();
+      randomOutfit();
+    }
+    if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      if (STATE.selectedId !== null && STATE.selectedId < DATA.projection.length - 1) {
+        selectOutfit(STATE.selectedId + 1);
+      }
+    }
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      if (STATE.selectedId !== null && STATE.selectedId > 0) {
+        selectOutfit(STATE.selectedId - 1);
+      }
+    }
+    if (e.key === 'Escape') {
+      hideCrossCategory();
+    }
+  });
+
+  // Hash change
+  window.addEventListener('hashchange', () => {
+    const m = window.location.hash.match(/outfit=(\d+)/);
+    if (m) selectOutfit(parseInt(m[1]));
+  });
+}
+
+function randomOutfit() {
+  const id = Math.floor(Math.random() * DATA.projection.length);
+  selectOutfit(id);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   DEBOUNCE UTILITY
+   ═══════════════════════════════════════════════════════════════════ */
+function debounce(fn, ms) {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   BOOT
+   ═══════════════════════════════════════════════════════════════════ */
+document.addEventListener('DOMContentLoaded', loadAll);
+</script>
+</body>
+</html>
