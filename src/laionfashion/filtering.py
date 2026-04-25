@@ -4,26 +4,20 @@ This is a debug bootstrap filter, not a safety classifier.  It uses keyword
 matching to bias toward captions that describe people wearing clothes and away
 from industrial, product-only, or irrelevant contexts.
 
-The filter uses a two-tier approach:
+Two interfaces:
 
-1. **Context terms** (e.g. "outfit", "wearing", "street style") strongly imply
-   a person-in-clothing context on their own.
-2. **Garment terms** (e.g. "jacket", "coat", "dress") are ambiguous — they
-   appear in product listings, industrial docs, and non-fashion contexts.
-   A garment term only counts if the caption also contains a **person hint**
-   (e.g. "woman", "man", "model", "wearing").
+- **filter_caption()** — binary accept/reject with reject reason (backward
+  compatible, used by ``broad`` and ``strict`` selection modes).
+- **score_caption()** — numeric score with breakdown, used by the ``outfit``
+  selection mode to prioritize visible-person-in-clothing captions over
+  product-only garment captions.
 
-Both tiers are gated by an exclusion list that rejects industrial, medical,
-product-only, and other non-fashion contexts.
-
-An optional ``require_person_context=True`` mode enforces that *all* accepted
-captions contain a person hint, not just garment-term matches.  This rejects
-product-only clothing captions that use context terms like "wearing" loosely.
+Both are gated by the same exclusion list.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -31,6 +25,7 @@ class RejectReason(str, Enum):
     EMPTY = "empty_caption"
     NO_FASHION_SIGNAL = "no_fashion_signal"
     NO_PERSON_CONTEXT = "no_person_context"
+    BELOW_SCORE_THRESHOLD = "below_score_threshold"
     EXCLUDED = "excluded_term"
 
 
@@ -47,14 +42,24 @@ class FilterResult:
         return not self.accepted
 
 
+@dataclass(frozen=True)
+class CaptionScore:
+    """Numeric score for a caption with signal breakdown."""
+
+    score: float
+    signals: dict[str, float] = field(default_factory=dict)
+    excluded: bool = False
+    excluded_term: str | None = None
+
+    @property
+    def is_excluded(self) -> bool:
+        return self.excluded
+
+
 # ---------------------------------------------------------------------------
 # Term lists
 # ---------------------------------------------------------------------------
 
-# Context terms: strongly imply person + clothing on their own.
-# Note: bare "fashion" is intentionally excluded — it matches product names
-# ("Fashion Heart Necklace"), decor, and jewelry organizers.  Only compound
-# forms that imply a person/outfit context are kept.
 CONTEXT_TERMS = (
     "outfit",
     "street style",
@@ -76,7 +81,6 @@ CONTEXT_TERMS = (
     "runway",
 )
 
-# Garment terms: only count when a person hint is also present.
 GARMENT_TERMS = (
     "dress",
     "shirt",
@@ -108,9 +112,6 @@ GARMENT_TERMS = (
     "hat",
 )
 
-# Person hints: at least one must appear alongside a garment term.
-# In strict mode (require_person_context=True), at least one must also appear
-# alongside context terms.
 PERSON_HINTS = (
     "woman",
     "women",
@@ -132,7 +133,6 @@ PERSON_HINTS = (
     "chic",
 )
 
-# Exclusion terms: reject regardless of fashion signal.
 EXCLUSION_TERMS = (
     # People / safety
     "baby",
@@ -140,6 +140,7 @@ EXCLUSION_TERMS = (
     "toddler",
     "child",
     "children",
+    "kid'",  # kid's, kids'
     "kid ",
     "kids",
     " son ",
@@ -274,7 +275,7 @@ EXCLUSION_TERMS = (
     "tablecloth",
     "placemat",
     "remodel",
-    "renovati",  # renovation, renovating
+    "renovati",
     "camper",
     "caravan",
     # Automotive / mechanical
@@ -294,7 +295,7 @@ EXCLUSION_TERMS = (
     "baking",
     "cooking",
     "roast",
-    # Ceremony / royalty / awards (dress is incidental)
+    # Ceremony / royalty / awards
     "ceremony",
     "coronation",
     "royal family",
@@ -308,7 +309,7 @@ EXCLUSION_TERMS = (
     "grammy",
     "emmy",
     "golden globe",
-    # Theater / performance
+    # Theater / performance / fictional characters
     "theater",
     "theatre",
     "broadway",
@@ -317,10 +318,14 @@ EXCLUSION_TERMS = (
     "costume party",
     "cosplay",
     "halloween",
+    "full monty",
+    "superman",
+    "superhero",
+    "superheroine",
     # News / events / politics / protest
     "protest",
     "protester",
-    "demonstrat",  # demonstration, demonstrators
+    "demonstrat",
     "rally",
     "riot",
     "police",
@@ -328,8 +333,8 @@ EXCLUSION_TERMS = (
     "arrested",
     "arrest",
     "injured",
-    "injur",  # injuries
-    "casualt",  # casualty, casualties
+    "injur",
+    "casualt",
     "shooting",
     "bombing",
     "explosion",
@@ -344,7 +349,7 @@ EXCLUSION_TERMS = (
     "hurricane",
     "tornado",
     "wildfire",
-    "evacuat",  # evacuation, evacuated
+    "evacuat",
     "election",
     "politician",
     "president",
@@ -360,7 +365,7 @@ EXCLUSION_TERMS = (
     "vote",
     "voter",
     "ballot",
-    "televisi",  # television
+    "televisi",
     "broadcast",
     "newscast",
     "reporter",
@@ -412,14 +417,165 @@ EXCLUSION_TERMS = (
     "animal",
 )
 
-# Backward-compatible flat lists (kept for any external consumers)
+# Backward-compatible flat lists
 FASHION_TERMS = CONTEXT_TERMS + GARMENT_TERMS
+
+# ---------------------------------------------------------------------------
+# Scoring — weighted signal terms
+# ---------------------------------------------------------------------------
+
+# Strong outfit context: captions with these very likely show a person
+# in visible clothing.  Score: +3.0 each (only first match counted).
+_STRONG_OUTFIT_TERMS = (
+    "outfit",
+    "ootd",
+    "what i wore",
+    "fashion week",
+    "fashion show",
+    "runway",
+    "street style",
+    "street fashion",
+    "lookbook",
+    "fashion model",
+)
+
+# Medium context: fashion-adjacent but slightly weaker signal.  +2.0.
+_MEDIUM_CONTEXT_TERMS = (
+    "fashion photo",
+    "fashion blog",
+    "fashion style",
+    "fashion look",
+    "style outfit",
+    "streetwear",
+    "dressed in",
+    "dressed up",
+)
+
+# Penalty terms: suggest non-fashion or misleading context.  -1.5 each.
+_PENALTY_TERMS = (
+    "half-dressed",
+    "half dressed",
+    "undress",
+    "search result",
+    "google",
+    "catalog",
+    "catalogue",
+    "buy now",
+    "shop now",
+    "add to cart",
+    "free shipping",
+    "price",
+    "discount",
+    "coupon",
+    "wholesale",
+    "bulk order",
+    "amazon",
+    "ebay",
+    "aliexpress",
+    "alibaba",
+)
+
+# Selection mode thresholds
+SELECTION_MODES: dict[str, float] = {
+    "broad": 0.5,
+    "strict": 1.5,
+    "outfit": 2.5,
+}
+
+
+def score_caption(caption: str | None) -> CaptionScore:
+    """Score a caption for outfit/person-in-clothing relevance.
+
+    Returns a :class:`CaptionScore` with a numeric score and signal breakdown.
+    Excluded captions get ``score = -inf``.
+
+    Score components:
+    - Strong outfit terms: +3.0 (first match)
+    - Medium context terms: +2.0 (first match)
+    - "wearing" context: +1.5
+    - Garment term present: +1.0
+    - Person hint present: +1.0
+    - Garment + person combo bonus: +0.5
+    - Penalty terms: -1.5 each
+    """
+    if not caption:
+        return CaptionScore(score=-float("inf"), signals={"empty": -float("inf")})
+
+    text = caption.lower()
+
+    # Check exclusions
+    for term in EXCLUSION_TERMS:
+        if term in text:
+            return CaptionScore(
+                score=-float("inf"),
+                excluded=True,
+                excluded_term=term,
+                signals={"excluded": -float("inf")},
+            )
+
+    signals: dict[str, float] = {}
+    score = 0.0
+
+    # Strong outfit context
+    for term in _STRONG_OUTFIT_TERMS:
+        if term in text:
+            signals["strong_outfit"] = 3.0
+            score += 3.0
+            break
+
+    # Medium context (only if no strong match)
+    if "strong_outfit" not in signals:
+        for term in _MEDIUM_CONTEXT_TERMS:
+            if term in text:
+                signals["medium_context"] = 2.0
+                score += 2.0
+                break
+
+    # "wearing" as context (only if no strong/medium match yet)
+    if "strong_outfit" not in signals and "medium_context" not in signals:
+        if "wearing" in text:
+            signals["wearing_context"] = 1.5
+            score += 1.5
+
+    # Garment term present
+    has_garment = any(term in text for term in GARMENT_TERMS)
+    if has_garment:
+        signals["garment_term"] = 1.0
+        score += 1.0
+
+    # Person hint present
+    has_person = any(hint in text for hint in PERSON_HINTS)
+    if has_person:
+        signals["person_hint"] = 1.0
+        score += 1.0
+
+    # Combo bonus: garment + person
+    if has_garment and has_person:
+        signals["garment_person_combo"] = 0.5
+        score += 0.5
+
+    # Penalty terms
+    penalty = 0.0
+    for term in _PENALTY_TERMS:
+        if term in text:
+            penalty -= 1.5
+    if penalty < 0:
+        signals["penalty"] = penalty
+        score += penalty
+
+    return CaptionScore(score=score, signals=signals)
+
+
+# ---------------------------------------------------------------------------
+# Binary filter (backward compatible)
+# ---------------------------------------------------------------------------
 
 
 def filter_caption(
     caption: str | None,
     *,
     require_person_context: bool = False,
+    min_score: float | None = None,
 ) -> FilterResult:
     """Evaluate whether *caption* describes a person wearing clothing.
 
@@ -428,9 +584,10 @@ def filter_caption(
     caption:
         The image caption to evaluate.
     require_person_context:
-        When *True*, accepted captions must contain at least one person hint
-        even if they match a context term.  This rejects product-only captions
-        that use words like "wearing" loosely (e.g. "table wearing a cloth").
+        When *True*, accepted captions must contain at least one person hint.
+    min_score:
+        When set, use score-based filtering instead of tier logic.
+        Captions scoring below this threshold are rejected.
 
     Returns a :class:`FilterResult` with accept/reject status and reason.
     """
@@ -444,9 +601,20 @@ def filter_caption(
         if term in text:
             return FilterResult(accepted=False, reason=RejectReason.EXCLUDED, matched_term=term)
 
+    # Score-based mode
+    if min_score is not None:
+        sc = score_caption(caption)
+        if sc.score >= min_score:
+            return FilterResult(accepted=True, matched_term=f"score={sc.score:.1f}")
+        return FilterResult(
+            accepted=False,
+            reason=RejectReason.BELOW_SCORE_THRESHOLD,
+            matched_term=f"score={sc.score:.1f}<{min_score}",
+        )
+
+    # Tier-based mode (original logic)
     has_person = any(hint in text for hint in PERSON_HINTS)
 
-    # Tier 1: context terms are sufficient on their own (unless strict mode)
     for term in CONTEXT_TERMS:
         if term in text:
             if require_person_context and not has_person:
@@ -457,7 +625,6 @@ def filter_caption(
                 )
             return FilterResult(accepted=True, matched_term=term)
 
-    # Tier 2: garment terms require a person hint
     if has_person:
         for term in GARMENT_TERMS:
             if term in text:
@@ -470,6 +637,9 @@ def caption_matches_fashion(
     caption: str | None,
     *,
     require_person_context: bool = False,
+    min_score: float | None = None,
 ) -> bool:
     """Simple boolean interface for backward compatibility."""
-    return filter_caption(caption, require_person_context=require_person_context).accepted
+    return filter_caption(
+        caption, require_person_context=require_person_context, min_score=min_score
+    ).accepted

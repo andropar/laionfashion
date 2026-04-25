@@ -11,7 +11,7 @@ from PIL import Image
 from tqdm.auto import tqdm
 
 from laionfashion.data_access import LaionTarReader, NaturalSubsetIndex, open_feature_memmap
-from laionfashion.filtering import RejectReason, filter_caption
+from laionfashion.filtering import SELECTION_MODES, RejectReason, filter_caption, score_caption
 
 
 def write_thumbnail(image: Image.Image, path: Path, max_size: int) -> None:
@@ -38,6 +38,10 @@ class FilterDiagnostics:
     accepted_samples: list[dict] = field(default_factory=list)
     rejected_samples: dict[str, list[dict]] = field(default_factory=dict)
 
+    # Score distribution tracking
+    accepted_scores: list[float] = field(default_factory=list)
+    selection_mode: str | None = None
+
     def record_reject(self, reason: RejectReason, caption: str, matched_term: str | None = None) -> None:
         key = reason.value
         self.reject_counts[key] = self.reject_counts.get(key, 0) + 1
@@ -48,16 +52,20 @@ class FilterDiagnostics:
                 entry["matched_term"] = matched_term
             samples.append(entry)
 
-    def record_accept(self, caption: str, matched_term: str | None = None) -> None:
+    def record_accept(self, caption: str, matched_term: str | None = None, score: float | None = None) -> None:
         self.accepted += 1
+        if score is not None:
+            self.accepted_scores.append(score)
         if len(self.accepted_samples) < MAX_SAMPLES_PER_REASON:
-            entry = {"caption": caption}
+            entry: dict = {"caption": caption}
             if matched_term:
                 entry["matched_term"] = matched_term
+            if score is not None:
+                entry["score"] = round(score, 2)
             self.accepted_samples.append(entry)
 
     def to_dict(self) -> dict:
-        return {
+        d: dict = {
             "scanned": self.scanned,
             "accepted": self.accepted,
             "metadata_errors": self.metadata_errors,
@@ -65,6 +73,17 @@ class FilterDiagnostics:
             "reject_counts": dict(sorted(self.reject_counts.items())),
             "accept_rate": round(self.accepted / max(self.scanned, 1), 4),
         }
+        if self.selection_mode:
+            d["selection_mode"] = self.selection_mode
+        if self.accepted_scores:
+            scores = self.accepted_scores
+            d["score_distribution"] = {
+                "min": round(min(scores), 2),
+                "max": round(max(scores), 2),
+                "mean": round(sum(scores) / len(scores), 2),
+                "count": len(scores),
+            }
+        return d
 
     def write_review_artifacts(self, out_dir: Path) -> dict[str, str]:
         """Write accepted/rejected caption samples to *out_dir*.
@@ -76,7 +95,7 @@ class FilterDiagnostics:
         # Accepted captions
         if self.accepted_samples:
             path = out_dir / "accepted_captions.csv"
-            _write_dicts_csv(path, self.accepted_samples, ["caption", "matched_term"])
+            _write_dicts_csv(path, self.accepted_samples, ["caption", "matched_term", "score"])
             artifacts["accepted_captions"] = path.name
 
         # Rejected captions (one file, all reasons)
@@ -116,11 +135,35 @@ def collect_caption_filtered_subset(
     thumbnail_dir: Path,
     thumbnail_size: int,
     require_person_context: bool = False,
+    selection_mode: str | None = None,
+    min_score: float | None = None,
 ) -> tuple[pd.DataFrame, FilterDiagnostics]:
-    """Collect a caption-filtered subset.  Returns ``(records, diagnostics)``."""
+    """Collect a caption-filtered subset.  Returns ``(records, diagnostics)``.
+
+    Parameters
+    ----------
+    selection_mode:
+        One of ``"broad"``, ``"strict"``, ``"outfit"``.  Sets a score threshold
+        from :data:`SELECTION_MODES`.  Overrides *require_person_context*.
+    min_score:
+        Explicit score threshold.  Overrides *selection_mode* if both are set.
+    """
     thumbnail_dir.mkdir(parents=True, exist_ok=True)
     records: list[dict] = []
     diag = FilterDiagnostics()
+
+    # Resolve effective score threshold
+    effective_min_score: float | None = None
+    if min_score is not None:
+        effective_min_score = min_score
+        diag.selection_mode = f"custom(min_score={min_score})"
+    elif selection_mode is not None:
+        effective_min_score = SELECTION_MODES[selection_mode]
+        diag.selection_mode = selection_mode
+    elif require_person_context:
+        diag.selection_mode = "strict_legacy"
+
+    use_scoring = effective_min_score is not None
 
     with tqdm(total=candidate_scan, desc="Scanning captions") as pbar:
         shard_order = rng.permutation(len(index.shards))
@@ -149,7 +192,14 @@ def collect_caption_filtered_subset(
                         continue
 
                     caption = metadata.get("caption", "")
-                    result = filter_caption(caption, require_person_context=require_person_context)
+
+                    if use_scoring:
+                        result = filter_caption(caption, min_score=effective_min_score)
+                        caption_score = score_caption(caption).score
+                    else:
+                        result = filter_caption(caption, require_person_context=require_person_context)
+                        caption_score = None
+
                     if result.rejected:
                         diag.record_reject(result.reason, caption, result.matched_term)
                         continue
@@ -160,7 +210,7 @@ def collect_caption_filtered_subset(
                         diag.image_errors += 1
                         continue
 
-                    diag.record_accept(caption, result.matched_term)
+                    diag.record_accept(caption, result.matched_term, score=caption_score)
                     thumb_name = f"{len(records):06d}_{global_index}.jpg"
                     write_thumbnail(image, thumbnail_dir / thumb_name, thumbnail_size)
                     records.append(

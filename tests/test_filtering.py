@@ -5,10 +5,13 @@ from __future__ import annotations
 import pytest
 
 from laionfashion.filtering import (
+    CaptionScore,
     FilterResult,
     RejectReason,
+    SELECTION_MODES,
     caption_matches_fashion,
     filter_caption,
+    score_caption,
 )
 
 
@@ -279,3 +282,125 @@ class TestEdgeCases:
         """'dressed in' is a context term."""
         result = filter_caption("She dressed in layers for winter")
         assert result.accepted
+
+
+# ---------------------------------------------------------------------------
+# Round 4 false positives
+# ---------------------------------------------------------------------------
+
+
+class TestRound4FalsePositives:
+    @pytest.mark.parametrize(
+        "caption",
+        [
+            "For people who want to see half-dressed men dancing... The Full Monty",
+            "Not many know that Brandon Routh's Superman costume was redesigned",
+            "Kid's TAO Short Sleeves White Dotted Stylish Casual Shirt",
+        ],
+    )
+    def test_rejects_round4_false_positives(self, caption: str) -> None:
+        result = filter_caption(caption)
+        assert result.rejected, f"Should reject: {caption!r}"
+
+    @pytest.mark.parametrize(
+        "caption",
+        [
+            "Buy now women's dress free shipping discount",
+            "Amazon best seller casual jacket wholesale price",
+            "Add to cart men's suit ebay listing",
+        ],
+    )
+    def test_penalty_captions_rejected_in_outfit_mode(self, caption: str) -> None:
+        """E-commerce spam captions should score below outfit threshold."""
+        sc = score_caption(caption)
+        assert sc.score < SELECTION_MODES["outfit"]
+
+
+# ---------------------------------------------------------------------------
+# Caption scoring
+# ---------------------------------------------------------------------------
+
+
+class TestScoreCaption:
+    def test_empty_caption(self) -> None:
+        sc = score_caption("")
+        assert sc.score == -float("inf")
+
+    def test_excluded_caption(self) -> None:
+        sc = score_caption("conformal coating jacket")
+        assert sc.is_excluded
+        assert sc.score == -float("inf")
+
+    def test_strong_outfit_term(self) -> None:
+        sc = score_caption("Great outfit for spring 2024")
+        assert sc.signals.get("strong_outfit") == 3.0
+        assert sc.score >= 3.0
+
+    def test_medium_context_term(self) -> None:
+        sc = score_caption("Fashion blog post about new trends")
+        assert sc.signals.get("medium_context") == 2.0
+
+    def test_wearing_context(self) -> None:
+        sc = score_caption("A beautiful mural on the wall wearing ivy")
+        assert sc.signals.get("wearing_context") == 1.5
+
+    def test_garment_plus_person(self) -> None:
+        sc = score_caption("Woman in a red jacket at the cafe")
+        assert sc.signals.get("garment_term") == 1.0
+        assert sc.signals.get("person_hint") == 1.0
+        assert sc.signals.get("garment_person_combo") == 0.5
+        assert sc.score >= 2.5
+
+    def test_garment_only(self) -> None:
+        """Garment without person hint should score low."""
+        sc = score_caption("Red jacket available in all sizes")
+        assert sc.signals.get("garment_term") == 1.0
+        assert "person_hint" not in sc.signals
+        assert sc.score < SELECTION_MODES["strict"]
+
+    def test_penalty_reduces_score(self) -> None:
+        sc = score_caption("Buy now women's dress free shipping discount")
+        assert sc.signals.get("penalty", 0) < 0
+        # Should score lower than a clean version
+        sc_clean = score_caption("Women's dress for evening event")
+        assert sc.score < sc_clean.score
+
+    def test_strong_outfit_beats_product(self) -> None:
+        """Outfit term should score higher than product-only garment."""
+        sc_outfit = score_caption("My daily outfit: jeans and a tee")
+        sc_product = score_caption("Jeans denim blue size 32")
+        assert sc_outfit.score > sc_product.score
+
+    def test_outfit_mode_threshold(self) -> None:
+        """Strong outfit captions pass outfit mode, weak ones don't."""
+        strong = "Street style outfit at fashion week with model posing"
+        weak = "Blue dress on rack"
+        assert score_caption(strong).score >= SELECTION_MODES["outfit"]
+        assert score_caption(weak).score < SELECTION_MODES["outfit"]
+
+
+# ---------------------------------------------------------------------------
+# Score-based filtering (min_score parameter)
+# ---------------------------------------------------------------------------
+
+
+class TestScoreBasedFiltering:
+    def test_min_score_accepts_high(self) -> None:
+        result = filter_caption("Woman wearing a great outfit today", min_score=2.0)
+        assert result.accepted
+
+    def test_min_score_rejects_low(self) -> None:
+        result = filter_caption("Red jacket available in all sizes", min_score=2.0)
+        assert result.rejected
+        assert result.reason == RejectReason.BELOW_SCORE_THRESHOLD
+
+    def test_min_score_still_excludes(self) -> None:
+        result = filter_caption("conformal coating jacket", min_score=0.0)
+        assert result.rejected
+        assert result.reason == RejectReason.EXCLUDED
+
+    def test_selection_modes_exist(self) -> None:
+        assert "broad" in SELECTION_MODES
+        assert "strict" in SELECTION_MODES
+        assert "outfit" in SELECTION_MODES
+        assert SELECTION_MODES["broad"] < SELECTION_MODES["strict"] < SELECTION_MODES["outfit"]

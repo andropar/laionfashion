@@ -14,6 +14,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from laionfashion.config import load_data_paths
 from laionfashion.data_access import FEATURE_REGISTRY, NaturalSubsetIndex
 from laionfashion.debug_export import collect_caption_filtered_subset, export_embeddings
+from laionfashion.filtering import SELECTION_MODES
 from laionfashion.outputs import make_output_dir
 
 
@@ -31,10 +32,25 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--thumbnail-size", type=int, default=256)
     parser.add_argument(
+        "--selection-mode",
+        choices=sorted(SELECTION_MODES),
+        default=None,
+        help=(
+            "Selection mode: broad (score>=0.5), strict (score>=1.5), "
+            "outfit (score>=2.5). Default: tier-based filtering."
+        ),
+    )
+    parser.add_argument(
+        "--min-filter-score",
+        type=float,
+        default=None,
+        help="Explicit minimum caption score. Overrides --selection-mode.",
+    )
+    parser.add_argument(
         "--require-person-context",
         action="store_true",
         default=False,
-        help="Require a person hint even for context-term matches (stricter filtering).",
+        help="Legacy: require a person hint even for context-term matches.",
     )
     return parser.parse_args()
 
@@ -54,6 +70,8 @@ def main() -> None:
         thumbnail_dir=out_dir / "thumbnails",
         thumbnail_size=args.thumbnail_size,
         require_person_context=args.require_person_context,
+        selection_mode=args.selection_mode,
+        min_score=args.min_filter_score,
     )
     if records.empty:
         raise RuntimeError(
@@ -105,4 +123,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
