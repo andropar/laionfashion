@@ -85,6 +85,26 @@ The app works entirely against exported debug bundles — no Raven paths require
 
 To get a bundle from Raven, copy the output directory (e.g. via `scp -r raven:/u/rothj/laionfashion/scripts/outputs/01_build_debug_subset/<timestamp>_<id> ./scripts/outputs/01_build_debug_subset/`) to your local checkout.
 
+## Building Projections
+
+Compute a 2D style-space projection for a debug bundle:
+
+```bash
+python scripts/02_build_projection.py scripts/outputs/01_build_debug_subset/<bundle>
+```
+
+This writes `projection.parquet` into the bundle directory and updates `manifest.json`. The Streamlit app picks it up automatically and shows an embedding map.
+
+Auto-selection: UMAP for >= 15 images (requires `umap-learn` from the `server` extra), PCA for 3–14, trivial layout for 1–2. Force a method with `--method pca`.
+
+On Raven:
+
+```bash
+python /u/rothj/laion_natural/scripts/start_as_slurm_job.py \
+  /u/rothj/laionfashion/scripts/02_build_projection.py \
+  /u/rothj/laionfashion/scripts/outputs/01_build_debug_subset/<bundle>
+```
+
 ## First MVP Bias
 
 Start with full-image/outfit-level retrieval. Add person crops, garment parsing, and compatibility only after the basic map and nearest-neighbor demo are compelling.

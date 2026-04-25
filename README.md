@@ -87,7 +87,25 @@ Point the sidebar at a bundle directory (or the parent `scripts/outputs/01_build
 - `embeddings.npy` – normalized float32 embeddings
 - `thumbnails/` – JPEG thumbnails referenced by the records table
 
-The app shows an image grid with captions, lets you select any image by index, and displays its nearest neighbors by cosine similarity.
+The app shows an image grid with captions, lets you select any image by index, and displays its nearest neighbors by cosine similarity. If a projection file is present, the app also shows a 2D embedding map.
+
+### Building a projection
+
+Compute a 2D projection from a bundle's embeddings:
+
+```bash
+python scripts/02_build_projection.py scripts/outputs/01_build_debug_subset/<bundle>
+```
+
+On Raven (for larger bundles with UMAP):
+
+```bash
+python /u/rothj/laion_natural/scripts/start_as_slurm_job.py \
+  /u/rothj/laionfashion/scripts/02_build_projection.py \
+  /u/rothj/laionfashion/scripts/outputs/01_build_debug_subset/<bundle>
+```
+
+The script auto-selects UMAP for large bundles (>= 15 images, requires `umap-learn`), PCA for small ones, and a trivial layout for 1–2 images. Use `--method pca` to force PCA.
 
 ## Current Scope
 
