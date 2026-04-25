@@ -1,23 +1,28 @@
 # CLAUDE.md — Fashion Embedding Explorer
 
+## CRITICAL: Completion requirements
+
+**Read `completion_plan.md` section 19 before doing anything.** All completion criteria must be fulfilled. Track progress in `progress.md`. Do not stop until done.
+
 ## Project overview
 
-A garment-level outfit representation workbench built on LAION-natural image data. Phase 1 (full-image explorer with CLIP axes) is complete. Phase 2 is garment-level parsing, cross-category retrieval, and learned embeddings.
+A garment-level outfit representation workbench built on LAION-natural image data. The goal is a polished, portfolio-ready fashion embedding explorer that demonstrates large-scale data curation, foundation-model exploitation, embedding analysis, vector search, and visual communication.
 
-Read `docs/agent_handoff.md` before making design or scope decisions. It has the project intent, non-goals, safety boundaries, and current phase priorities.
+Read `docs/agent_handoff.md` before making design or scope decisions.
 
 ## Key documentation
 
-- `docs/agent_handoff.md` — Durable project brief. Read first. Update when direction changes.
-- `docs/development.md` — Local/Raven workflow, MVP pipeline steps, legacy scripts.
-- `README.md` — Setup, run commands, pipeline overview.
+- `completion_plan.md` — Full project spec with completion criteria (section 19)
+- `progress.md` — Progress tracking
+- `docs/agent_handoff.md` — Project brief, priorities, safety boundaries
+- `docs/development.md` — Pipeline workflow, Raven commands
 
-### How to use and update docs
+### How to update docs
 
-- **agent_handoff.md** is the source of truth for *what* and *why*. Update it when project goals, priorities, or constraints change. Do not let it become stale — if you change the strategic direction, update the handoff doc in the same commit.
-- **development.md** is the source of truth for *how*. Update it when you add new scripts, change the pipeline, or modify the Raven workflow.
-- **README.md** is the public-facing summary. Keep it concise. Update when the pipeline or setup instructions change.
-- Do not duplicate information across docs. Cross-reference instead.
+- **agent_handoff.md**: source of truth for *what* and *why*. Update when direction changes.
+- **development.md**: source of truth for *how*. Update when pipeline changes.
+- **README.md**: public-facing summary. Keep concise.
+- **progress.md**: track what's done vs what remains against completion_plan.md.
 
 ## Development commands
 
@@ -30,24 +35,22 @@ streamlit run app/streamlit_app.py  # launch explorer
 
 ## Code structure
 
-- `src/laionfashion/` — Library code (filtering, bundle loading, axes, projection, image scoring, review)
-- `scripts/` — CLI scripts for data pipeline steps (01–05)
+- `src/laionfashion/` — Library code
+- `scripts/` — CLI pipeline scripts (01–11)
 - `app/` — Streamlit explorer
-- `tests/` — Pytest suite (all tests run without CLIP/GPU using mock scorers)
+- `tests/` — Pytest suite (all local-friendly with mocks)
 
 ## Conventions
 
-- Tests must stay lightweight and local-friendly. Use mock scorers (ConstantScorer, ListScorer) for CLIP-dependent logic.
-- Scripts follow the pattern: `scripts/0N_verb_noun.py <bundle_dir> [options]`.
-- Bundle outputs go under `scripts/outputs/` (gitignored).
-- LAION-derived images are private/local. Do not expose publicly.
-- Plot labels: capitalize only the first word.
-- Style axes are exploratory prompt directions, not ground-truth labels. Use careful language.
-- The Raven/local protocol is in `docs/agent_handoff.md`. Local code must work without `/ptmp/rothj`.
+- Tests must stay lightweight. Use mock scorers for CLIP-dependent logic.
+- Scripts: `scripts/0N_verb_noun.py <bundle_dir> [options]`
+- Bundle outputs: `scripts/outputs/` (gitignored)
+- LAION images: private/local only
+- Plot labels: capitalize only first word
+- Style axes: exploratory, not ground truth
+- Local code must work without `/ptmp/rothj`
 
 ## Raven execution
-
-Use the SLURM helper by filepath, not alias:
 
 ```bash
 python /u/rothj/laion_natural/scripts/start_as_slurm_job.py \
@@ -56,6 +59,17 @@ python /u/rothj/laion_natural/scripts/start_as_slurm_job.py \
 
 ## Current state (2026-04-25)
 
-Phase 1 complete: caption filtering, CLIP reranking, UMAP projection, 6 CLIP prompt-direction axes, Streamlit explorer with dataset info panel.
+Phase 1 complete: caption filtering, CLIP reranking, UMAP projection, 6 CLIP prompt-direction axes, Streamlit explorer.
 
-Phase 2 starting: garment-aware bundle format, person/garment detection, cross-category retrieval baseline, evaluation harness. See `docs/agent_handoff.md` Phase 2 for priorities.
+Phase 2 in progress: garment detection (DETR), garment CLIP embeddings, cross-category retrieval baseline, evaluation harness, portable bundles.
+
+Major gaps vs completion_plan.md section 19:
+- Scale: need 5k-50k images, currently 200
+- No FashionCLIP or alternative embedding comparison
+- No vector search index (FAISS/Annoy)
+- No human labels / pairwise evaluation
+- No case study page
+- No demo video
+- No visual atlas figure
+- No dataset/model card
+- Explorer UI needs polish for portfolio screenshots
