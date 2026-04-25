@@ -33,33 +33,46 @@ Do not start by training a large model. Do not build a full recommender. Do not 
 
 The first app should stay local/private. Treat real LAION-derived thumbnails as private artifacts unless told otherwise.
 
-## First Useful MVP
+## Phase 1 MVP (done)
 
-The MVP should answer:
+The full-image outfit explorer is working:
 
-> Given a filtered subset of natural images containing people and visible clothing, can users select an outfit/image, inspect similar examples, inspect compatibility-like examples, and move through a 2D style/aesthetic space?
+- Curated CLIP-reranked subset of people wearing visible clothing.
+- Full-image embeddings from LAION-natural memmaps.
+- UMAP 2D projection.
+- 6 CLIP prompt-direction style axes (colorful/neutral, streetwear/classic, etc.).
+- Streamlit app: embedding map, axis coloring, nearest neighbors, top/bottom examples.
+- Contact sheet review, filter diagnostics, dataset info panel.
 
-Minimum app capabilities:
+This is sufficient scaffolding. Do not spend more time polishing it.
 
-- Curated subset of images containing people wearing visible clothing.
-- Embeddings for full images and eventually person crops.
-- 2D map using UMAP or similar.
-- Prompt-axis scores such as minimalist/maximalist, formal/casual, streetwear/classic, coherent/awkward, colorful/neutral, polished/rough.
-- Search/retrieval: select image, show nearest neighbors, show high/low examples on axes.
-- Simple context panel: tags, detected garment classes if available, aesthetic/coherence proxy scores.
-- README and screenshots suitable for a case study.
+## Phase 2: Garment-Level Representation Workbench
 
-Stretch features come later: garment segmentation, cross-category compatibility, missing-item suggestions, outfit builder, human-calibrated probes, and model comparisons.
+The real goal is to **learn/discover garment and outfit embeddings that organize fashion-relevant structure** — style, category, color, silhouette, formality, season — then ask whether compatibility emerges as a measurable behavior of that space.
 
-## Strategic Order
+Compatibility is an **evaluation target**, not a premature training signal.
 
-Start with **outfit-level embedding exploration**, not garment-level segmentation.
+### Priority order
 
-1. Get a beautiful outfit/image embedding explorer working.
-2. Add prompt axes and retrieval.
-3. Add weak labels or style tags.
-4. Add garment segmentation only after the above is compelling.
-5. Add compatibility and outfit builder as the visible "wow" feature.
+1. **Garment-aware bundle format.** Add `garments.parquet`: outfit_id, garment_id, category, bbox/mask, crop_path, source image, CLIP embedding row. Start with bounding boxes and crops, not perfect segmentation.
+
+2. **Compatibility baseline.** Use garment crops with frozen CLIP embeddings. Build cross-category retrieval: top → bottoms, dress → shoes, jacket → pants. It will likely be mediocre — that is the baseline to beat.
+
+3. **Evaluation harness.** Hold out one garment from an outfit and rank candidate replacements from the same category. Metrics: recall@K, MRR, plus visual review sheets. Add hard negatives so the task is not trivial.
+
+4. **Learned outfit/garment embeddings.** Start simple: frozen image encoder + small category-aware projection heads trained with contrastive/ranking loss on co-occurring garments. Only then consider bigger models or outfit-context transformers.
+
+5. **Outfit builder demo.** Streamlit becomes: choose a garment or partial outfit, choose target category, compare CLIP vs. learned model recommendations, inspect why.
+
+### Key caution
+
+LAION natural images provide scale and diversity, but co-occurrence is a noisy weak label — "appeared together in an image" ≠ "stylistically compatible." Consider mixing in cleaner outfit datasets (Polyvore, DeepFashion, Fashionpedia) for supervision and evaluation.
+
+### Representation-first philosophy
+
+Do not train first. First define the retrieval/evaluation task. Otherwise you risk learning background, gender presentation, category shortcuts, or "street style photo" aesthetics instead of actual clothing structure.
+
+The objective should stay exploratory and self-supervised at first: co-occurrence, same outfit, same source page/caption, visual/text consistency. Build tools to inspect axes, clusters, and retrieval behavior. Later add compatibility labels to validate or fine-tune.
 
 ## Current Server Reality
 
