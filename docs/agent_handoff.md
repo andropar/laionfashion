@@ -210,6 +210,36 @@ Narrative:
 
 > Large-scale natural image datasets contain rich information about clothing in context, but the structure is buried in noisy web data. I filtered a large natural image corpus for visible outfits, extracted foundation-model embeddings, derived interpretable style axes, and built an explorer for navigating similarity, compatibility proxies, and style clusters.
 
+## Local Development from Portable Bundles
+
+Raven produces bundles; local development works entirely from those bundles.
+
+Pack a bundle on Raven:
+
+```bash
+python scripts/10_pack_bundle.py <bundle>
+# produces <bundle_name>.tar.gz
+```
+
+Transfer and unpack locally:
+
+```bash
+scp raven:/u/rothj/laionfashion/<bundle_name>.tar.gz .
+tar xzf <bundle_name>.tar.gz
+python scripts/11_validate_portable_bundle.py <bundle_dir>
+```
+
+Then run everything locally:
+
+```bash
+pip install -e ".[dev,app]"
+streamlit run app/streamlit_app.py
+python scripts/08_evaluate_retrieval.py <bundle_dir>
+python scripts/09_garment_review.py <bundle_dir>
+```
+
+All paths in records/garments parquet files are relative to the bundle directory. No LAION data or Raven paths required.
+
 ## Raven / Local Agent Protocol
 
 Local Claude Code owns code edits, app implementation, and local tests. It should work without `/ptmp/rothj`.
