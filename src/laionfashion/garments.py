@@ -351,3 +351,59 @@ def validate_garments(garments: pd.DataFrame, n_outfits: int) -> None:
 
     if garments["garment_id"].duplicated().any():
         raise ValueError("garment_id must be unique")
+
+
+# ---------------------------------------------------------------------------
+# Garment embeddings
+# ---------------------------------------------------------------------------
+
+
+class GarmentEmbedder(Protocol):
+    """Protocol for garment crop embedding."""
+
+    def embed_batch(self, images: list[Image.Image]) -> np.ndarray: ...
+
+
+class MockEmbedder:
+    """Returns fixed-size random embeddings.  For testing without CLIP."""
+
+    def __init__(self, dim: int = 512, seed: int = 42) -> None:
+        self._dim = dim
+        self._rng = np.random.default_rng(seed)
+
+    def embed_batch(self, images: list[Image.Image]) -> np.ndarray:
+        emb = self._rng.standard_normal((len(images), self._dim)).astype(np.float32)
+        emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+        return emb
+
+
+def embed_garment_crops(
+    garments: pd.DataFrame,
+    bundle_dir: Path,
+    embedder: GarmentEmbedder,
+    *,
+    batch_size: int = 32,
+) -> np.ndarray:
+    """Embed all garment crops and return an (n_garments, dim) matrix.
+
+    The returned matrix is ordered by ``garment_id`` (ascending).  Row *i*
+    corresponds to ``garment_id == i``.
+    """
+    sorted_garments = garments.sort_values("garment_id").reset_index(drop=True)
+    all_embeddings: list[np.ndarray] = []
+
+    for start in tqdm(range(0, len(sorted_garments), batch_size), desc="Embedding garment crops"):
+        batch = sorted_garments.iloc[start : start + batch_size]
+        images = []
+        for _, row in batch.iterrows():
+            crop_path = bundle_dir / row["crop_path"]
+            if crop_path.exists():
+                images.append(Image.open(crop_path).convert("RGB"))
+            else:
+                # Placeholder for missing crops
+                images.append(Image.new("RGB", (64, 64)))
+                logger.warning("Missing crop: %s", crop_path)
+        emb = embedder.embed_batch(images)
+        all_embeddings.append(emb)
+
+    return np.concatenate(all_embeddings, axis=0)

@@ -16,7 +16,13 @@ from laionfashion.image_scoring import ImageScorer
 
 
 def write_resized(image: Image.Image, path: Path, max_size: int) -> None:
-    """Write a copy of *image* resized so the long edge is at most *max_size*."""
+    """Write a copy of *image* resized so the long edge is at most *max_size*.
+
+    Uses ``PIL.Image.thumbnail`` which only *downscales* — if the source image
+    is already smaller than *max_size*, it is saved at its original resolution.
+    This means ``--detection-image-size 768`` preserves the source resolution
+    but cannot upscale images stored at lower resolution in the LAION tars.
+    """
     resized = image.copy()
     resized.thumbnail((max_size, max_size))
     resized.save(path, quality=90)

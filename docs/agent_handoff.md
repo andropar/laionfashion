@@ -54,15 +54,45 @@ Compatibility is an **evaluation target**, not a premature training signal.
 
 ### Priority order
 
-1. **Garment-aware bundle format.** Add `garments.parquet`: outfit_id, garment_id, category, bbox/mask, crop_path, source image, CLIP embedding row. Start with bounding boxes and crops, not perfect segmentation.
+1. **Garment-aware bundle format (done).** `garments.parquet` with outfit_id, garment_id, category, bbox, crop_path, source_image_path, confidence.  Detection uses `yainage90/fashion-object-detection` (Conditional DETR, categories: top/bottom/dress/outer/shoes/hat/bag).  Garment crops and CLIP embeddings stored alongside.
 
-2. **Compatibility baseline.** Use garment crops with frozen CLIP embeddings. Build cross-category retrieval: top → bottoms, dress → shoes, jacket → pants. It will likely be mediocre — that is the baseline to beat.
+2. **Compatibility baseline (done).** `retrieval.py` provides `retrieve_similar_garments()` and `retrieve_cross_category()` — frozen CLIP cosine similarity with category filter.  Expected to be mediocre; that is the baseline to beat.
 
 3. **Evaluation harness.** Hold out one garment from an outfit and rank candidate replacements from the same category. Metrics: recall@K, MRR, plus visual review sheets. Add hard negatives so the task is not trivial.
 
 4. **Learned outfit/garment embeddings.** Start simple: frozen image encoder + small category-aware projection heads trained with contrastive/ranking loss on co-occurring garments. Only then consider bigger models or outfit-context transformers.
 
 5. **Outfit builder demo.** Streamlit becomes: choose a garment or partial outfit, choose target category, compare CLIP vs. learned model recommendations, inspect why.
+
+### Garment pipeline commands (Raven)
+
+```bash
+# Extract garments from detection images
+python scripts/06_extract_garments.py <bundle>
+
+# Embed garment crops with CLIP
+python scripts/07_embed_garments.py <bundle>
+```
+
+### Bundle artifacts after garment pipeline
+
+```
+<bundle>/
+  records.parquet            — outfit records
+  embeddings.npy             — full-image embeddings
+  thumbnails/                — 160px UI thumbnails
+  detection_images/          — higher-res images for detection
+  garments.parquet           — garment records with bbox, category, confidence
+  garment_crops/             — cropped garment images
+  garment_embeddings.npy     — per-garment CLIP embeddings
+  projection.parquet         — UMAP 2D projection
+  axis_scores.parquet        — CLIP prompt-direction axes
+  manifest.json              — pipeline metadata
+```
+
+### Detection image resolution
+
+`--detection-image-size 768` preserves the source resolution from LAION tars but cannot upscale.  LAION-natural images are typically stored at ~256–384px, so detection images are often smaller than 768px.  This is a data limitation — the `write_resized` function uses `PIL.Image.thumbnail()` which only downscales.  If higher-resolution source images become available, the detection images will automatically be larger.
 
 ### Key caution
 
