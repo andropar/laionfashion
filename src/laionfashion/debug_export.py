@@ -15,10 +15,11 @@ from laionfashion.filtering import SELECTION_MODES, RejectReason, filter_caption
 from laionfashion.image_scoring import ImageScorer
 
 
-def write_thumbnail(image: Image.Image, path: Path, max_size: int) -> None:
-    thumb = image.copy()
-    thumb.thumbnail((max_size, max_size))
-    thumb.save(path, quality=90)
+def write_resized(image: Image.Image, path: Path, max_size: int) -> None:
+    """Write a copy of *image* resized so the long edge is at most *max_size*."""
+    resized = image.copy()
+    resized.thumbnail((max_size, max_size))
+    resized.save(path, quality=90)
 
 
 # Maximum caption samples to keep per reject reason (keeps output small).
@@ -157,6 +158,8 @@ def collect_caption_filtered_subset(
     min_score: float | None = None,
     image_scorer: ImageScorer | None = None,
     min_image_score: float = 0.0,
+    detection_image_dir: Path | None = None,
+    detection_image_size: int | None = None,
 ) -> tuple[pd.DataFrame, FilterDiagnostics]:
     """Collect a caption-filtered subset.  Returns ``(records, diagnostics)``.
 
@@ -173,8 +176,17 @@ def collect_caption_filtered_subset(
         if below *min_image_score*.
     min_image_score:
         Minimum image score to accept.  Only used when *image_scorer* is set.
+    detection_image_dir:
+        When set (alongside *detection_image_size*), write a higher-resolution
+        copy of each image here for downstream garment detection.  The path
+        is stored in ``detection_image_path`` in the records table.
+    detection_image_size:
+        Long-edge pixel size for detection images (e.g. 512 or 768).
     """
     thumbnail_dir.mkdir(parents=True, exist_ok=True)
+    write_detection_images = detection_image_dir is not None and detection_image_size is not None
+    if write_detection_images:
+        detection_image_dir.mkdir(parents=True, exist_ok=True)
     records: list[dict] = []
     diag = FilterDiagnostics()
 
@@ -257,24 +269,30 @@ def collect_caption_filtered_subset(
 
                     diag.record_accept(caption, result.matched_term, score=caption_score)
                     thumb_name = f"{len(records):06d}_{global_index}.jpg"
-                    write_thumbnail(image, thumbnail_dir / thumb_name, thumbnail_size)
-                    records.append(
-                        {
-                            "row_id": len(records),
-                            "global_index": int(global_index),
-                            "tar_path": str(shard.tar_path),
-                            "within_shard_index": int(within_shard_index),
-                            "caption": caption,
-                            "url": metadata.get("url", ""),
-                            "width": metadata.get("width"),
-                            "height": metadata.get("height"),
-                            "original_width": metadata.get("original_width"),
-                            "original_height": metadata.get("original_height"),
-                            "sha256": metadata.get("sha256", ""),
-                            "thumbnail_path": str(Path("thumbnails") / thumb_name),
-                            **({"image_outfit_score": round(img_score, 4)} if img_score is not None else {}),
-                        }
-                    )
+                    write_resized(image, thumbnail_dir / thumb_name, thumbnail_size)
+
+                    record: dict = {
+                        "row_id": len(records),
+                        "global_index": int(global_index),
+                        "tar_path": str(shard.tar_path),
+                        "within_shard_index": int(within_shard_index),
+                        "caption": caption,
+                        "url": metadata.get("url", ""),
+                        "width": metadata.get("width"),
+                        "height": metadata.get("height"),
+                        "original_width": metadata.get("original_width"),
+                        "original_height": metadata.get("original_height"),
+                        "sha256": metadata.get("sha256", ""),
+                        "thumbnail_path": str(Path("thumbnails") / thumb_name),
+                    }
+                    if img_score is not None:
+                        record["image_outfit_score"] = round(img_score, 4)
+                    if write_detection_images:
+                        det_name = f"{len(records):06d}_{global_index}.jpg"
+                        write_resized(image, detection_image_dir / det_name, detection_image_size)
+                        record["detection_image_path"] = str(Path("detection_images") / det_name)
+
+                    records.append(record)
 
     return pd.DataFrame.from_records(records), diag
 
@@ -374,47 +392,69 @@ def score_and_rank_candidates(
     return ranked, diag
 
 
-def rewrite_thumbnails_for_ranked(
+def _rewrite_image_dir_for_ranked(
     ranked: pd.DataFrame,
     bundle_dir: Path,
-) -> pd.DataFrame:
-    """Rename thumbnails to match new row_ids and update paths in *ranked*.
+    path_column: str,
+    subdir: str,
+) -> list[str]:
+    """Rename images in *subdir* to match new row_ids.  Returns updated paths."""
+    img_dir = bundle_dir / subdir
+    if not img_dir.exists():
+        return list(ranked[path_column]) if path_column in ranked.columns else []
 
-    Operates in-place on the thumbnail directory.  Returns the updated DataFrame.
-    """
-    thumb_dir = bundle_dir / "thumbnails"
-    ranked = ranked.copy()
     new_paths = []
     for _, row in ranked.iterrows():
-        old_rel = row["thumbnail_path"]
+        old_rel = row.get(path_column, "")
+        if not old_rel or pd.isna(old_rel):
+            new_paths.append((None, None, old_rel))
+            continue
         old_path = bundle_dir / old_rel
         new_name = f"{int(row['row_id']):06d}_{int(row['global_index'])}.jpg"
-        new_rel = f"thumbnails/{new_name}"
+        new_rel = f"{subdir}/{new_name}"
         new_path = bundle_dir / new_rel
         if old_path.exists() and old_path != new_path:
-            # Use a staging name to avoid collisions
-            stage = thumb_dir / f"_stage_{new_name}"
+            stage = img_dir / f"_stage_{new_name}"
             old_path.rename(stage)
             new_paths.append((stage, new_path, new_rel))
         else:
             new_paths.append((None, new_path, new_rel))
 
-    # Finalize staging
-    updated_paths = []
+    updated = []
     for stage, final, rel in new_paths:
         if stage is not None and stage.exists():
             stage.rename(final)
-        updated_paths.append(rel)
+        updated.append(rel)
 
-    ranked["thumbnail_path"] = updated_paths
-
-    # Clean up any leftover thumbnails from candidates not in the top N
-    kept = set(ranked["thumbnail_path"])
-    for f in thumb_dir.iterdir():
+    # Clean up leftovers
+    kept = set(updated)
+    for f in img_dir.iterdir():
         if f.name.startswith("_stage_"):
             f.unlink()
-        elif f"thumbnails/{f.name}" not in kept:
+        elif f"{subdir}/{f.name}" not in kept:
             f.unlink()
+
+    return updated
+
+
+def rewrite_thumbnails_for_ranked(
+    ranked: pd.DataFrame,
+    bundle_dir: Path,
+) -> pd.DataFrame:
+    """Rename thumbnails (and detection images if present) to match new row_ids.
+
+    Operates in-place on the image directories.  Returns the updated DataFrame.
+    """
+    ranked = ranked.copy()
+
+    ranked["thumbnail_path"] = _rewrite_image_dir_for_ranked(
+        ranked, bundle_dir, "thumbnail_path", "thumbnails"
+    )
+
+    if "detection_image_path" in ranked.columns:
+        ranked["detection_image_path"] = _rewrite_image_dir_for_ranked(
+            ranked, bundle_dir, "detection_image_path", "detection_images"
+        )
 
     return ranked
 

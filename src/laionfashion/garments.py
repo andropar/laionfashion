@@ -257,16 +257,26 @@ def extract_garments_from_bundle(
     garment_rows: list[dict] = []
     garment_id = 0
 
+    has_detection_images = "detection_image_path" in records.columns
+
     for _, row in tqdm(records.iterrows(), total=len(records), desc="Detecting garments"):
         outfit_id = int(row["row_id"])
-        thumb_rel = row.get("thumbnail_path", "")
-        thumb_path = bundle_dir / thumb_rel if thumb_rel else None
 
-        if thumb_path is None or not thumb_path.exists():
-            logger.warning("Missing thumbnail for outfit_id=%d, skipping", outfit_id)
+        # Prefer detection images (higher resolution) over thumbnails
+        source_rel = None
+        if has_detection_images and pd.notna(row.get("detection_image_path")):
+            candidate = bundle_dir / row["detection_image_path"]
+            if candidate.exists():
+                source_rel = row["detection_image_path"]
+        if source_rel is None:
+            source_rel = row.get("thumbnail_path", "")
+
+        source_path = bundle_dir / source_rel if source_rel else None
+        if source_path is None or not source_path.exists():
+            logger.warning("Missing image for outfit_id=%d, skipping", outfit_id)
             continue
 
-        image = Image.open(thumb_path).convert("RGB")
+        image = Image.open(source_path).convert("RGB")
 
         if method == "region_split_v0":
             regions = extract_regions_v0(image)
@@ -292,6 +302,7 @@ def extract_garments_from_bundle(
                 "bbox_h": region.bbox_h,
                 "confidence": region.confidence,
                 "crop_path": crop_rel,
+                "source_image_path": source_rel,
                 "method": method,
             })
             garment_id += 1

@@ -223,6 +223,17 @@ class TestExtractGarmentsFromBundle:
         )
         assert len(garments) == 4  # 2 remaining images * 2 regions
 
+    def test_source_image_path_column(self, tmp_path: Path) -> None:
+        bundle_dir = _make_bundle(tmp_path, n=2)
+        records = pd.read_parquet(bundle_dir / "records.parquet")
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="detr", detector=MockDetector()
+        )
+        assert "source_image_path" in garments.columns
+        # Should reference thumbnail_path since no detection images exist
+        for _, row in garments.iterrows():
+            assert "thumbnails/" in row["source_image_path"]
+
     def test_custom_categories(self, tmp_path: Path) -> None:
         """MockDetector with shoes-only detection."""
         bundle_dir = _make_bundle(tmp_path, n=2)
@@ -350,3 +361,93 @@ class TestBundleWithGarments:
         outfit_garments = bundle.garments_for_outfit(1)
         assert len(outfit_garments) == 2
         assert set(outfit_garments["category"]) == {"top", "bottom"}
+
+
+# ---------------------------------------------------------------------------
+# Detection image preference
+# ---------------------------------------------------------------------------
+
+
+def _make_bundle_with_detection_images(
+    tmp_path: Path, n: int = 3, thumb_size: tuple[int, int] = (80, 120), det_size: tuple[int, int] = (400, 600)
+) -> Path:
+    """Create a bundle with both thumbnails and detection images at different sizes."""
+    thumb_dir = tmp_path / "thumbnails"
+    det_dir = tmp_path / "detection_images"
+    thumb_dir.mkdir()
+    det_dir.mkdir()
+    records = []
+    for i in range(n):
+        name = f"{i:06d}_{i}.jpg"
+        # Small thumbnail
+        Image.new("RGB", thumb_size, color=(i * 50, 100, 200)).save(thumb_dir / name, quality=90)
+        # Larger detection image
+        Image.new("RGB", det_size, color=(i * 50, 100, 200)).save(det_dir / name, quality=90)
+        records.append({
+            "row_id": i,
+            "global_index": i * 100,
+            "caption": f"person wearing outfit {i}",
+            "thumbnail_path": f"thumbnails/{name}",
+            "detection_image_path": f"detection_images/{name}",
+        })
+    pd.DataFrame(records).to_parquet(tmp_path / "records.parquet", index=False)
+    emb = np.random.default_rng(0).standard_normal((n, 16)).astype(np.float32)
+    np.save(tmp_path / "embeddings.npy", emb)
+    return tmp_path
+
+
+class TestDetectionImagePreference:
+    def test_uses_detection_image_when_available(self, tmp_path: Path) -> None:
+        bundle_dir = _make_bundle_with_detection_images(tmp_path, n=2)
+        records = pd.read_parquet(bundle_dir / "records.parquet")
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="detr", detector=MockDetector()
+        )
+        # source_image_path should reference detection images
+        for _, row in garments.iterrows():
+            assert "detection_images/" in row["source_image_path"]
+
+    def test_falls_back_to_thumbnail(self, tmp_path: Path) -> None:
+        """When detection_image_path column exists but files are missing, fall back."""
+        bundle_dir = _make_bundle_with_detection_images(tmp_path, n=2)
+        # Delete detection images
+        import shutil
+        shutil.rmtree(bundle_dir / "detection_images")
+        records = pd.read_parquet(bundle_dir / "records.parquet")
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="detr", detector=MockDetector()
+        )
+        for _, row in garments.iterrows():
+            assert "thumbnails/" in row["source_image_path"]
+
+    def test_crops_match_detection_image_dimensions(self, tmp_path: Path) -> None:
+        """Crops should match the detection image size, not the thumbnail size."""
+        # Detection image is 400x600, MockDetector returns bbox (0,0,80,60)
+        # which refers to the detection image pixel space
+        bundle_dir = _make_bundle_with_detection_images(
+            tmp_path, n=1, thumb_size=(80, 120), det_size=(400, 600)
+        )
+        records = pd.read_parquet(bundle_dir / "records.parquet")
+        # Use a detector that returns a region only possible in the larger image
+        big_region_detector = MockDetector([
+            GarmentRegion("top", 0, 0, 300, 200, confidence=0.9),
+        ])
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="detr", detector=big_region_detector
+        )
+        assert len(garments) == 1
+        crop = Image.open(bundle_dir / garments.iloc[0]["crop_path"])
+        # Crop should be 300x200 (from the 400x600 detection image)
+        assert crop.size == (300, 200)
+
+    def test_no_detection_column_uses_thumbnails(self, tmp_path: Path) -> None:
+        """Bundles without detection_image_path column still work."""
+        bundle_dir = _make_bundle(tmp_path, n=2)
+        records = pd.read_parquet(bundle_dir / "records.parquet")
+        assert "detection_image_path" not in records.columns
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="detr", detector=MockDetector()
+        )
+        assert len(garments) == 4
+        for _, row in garments.iterrows():
+            assert "thumbnails/" in row["source_image_path"]

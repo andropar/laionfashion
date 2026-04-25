@@ -37,6 +37,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--thumbnail-size", type=int, default=256)
     parser.add_argument(
+        "--detection-image-size",
+        type=int,
+        default=None,
+        help="Long-edge size for higher-res detection images (e.g. 512, 768). "
+             "Written to detection_images/ for garment parsing. Off by default.",
+    )
+    parser.add_argument(
         "--selection-mode",
         choices=sorted(SELECTION_MODES),
         default=None,
@@ -129,6 +136,7 @@ def main() -> None:
     rng = np.random.default_rng(args.seed)
 
     print(f"Collecting up to {n_collect} caption-matched candidates...")
+    det_dir = out_dir / "detection_images" if args.detection_image_size else None
     records, filter_diag = collect_caption_filtered_subset(
         index=index,
         rng=rng,
@@ -141,6 +149,8 @@ def main() -> None:
         min_score=args.min_filter_score,
         image_scorer=inline_scorer,
         min_image_score=args.min_image_outfit_score if inline_scorer else 0.0,
+        detection_image_dir=det_dir,
+        detection_image_size=args.detection_image_size,
     )
     if records.empty:
         raise RuntimeError(
