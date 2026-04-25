@@ -21,6 +21,7 @@ dependencies = [
 server = [
     "pyarrow",
     "torch",
+    "transformers",
     "umap-learn",
 ]
 app = [

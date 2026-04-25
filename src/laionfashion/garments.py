@@ -1,24 +1,27 @@
-"""Garment-level data model and region extraction.
+"""Garment-level data model and detection.
 
 A garment record maps a bounding-box region within a source outfit image to a
 category label, a crop file, and (optionally) an embedding row.
 
-The v0 extractor uses a simple heuristic: split each image into upper-body and
-lower-body regions.  This is intentionally crude — it unblocks the downstream
-retrieval and evaluation pipeline while we decide on a real detector (YOLOv8,
-Grounding DINO, etc.).
+Two extraction methods are available:
+
+- **detr** (default): Uses ``yainage90/fashion-object-detection``, a Conditional
+  DETR fine-tuned on ModaNet + Fashionpedia.  Produces bounding boxes with
+  category labels: top, bottom, dress, outer, shoes, hat, bag.
+- **region_split_v0**: Crude upper/lower body split.  No model required.
 
 Schema (``garments.parquet``)::
 
     outfit_id       int     — row_id of the source image in records.parquet
     garment_id      int     — unique garment ID across the bundle
-    category        str     — "upper_body", "lower_body", "full_body", or finer labels later
+    category        str     — "top", "bottom", "dress", "outer", "shoes", etc.
     bbox_x          int     — crop bounding box, pixels in the source thumbnail
     bbox_y          int
     bbox_w          int
     bbox_h          int
+    confidence      float   — detector confidence (NaN for region_split_v0)
     crop_path       str     — relative path to the garment crop JPEG
-    method          str     — extraction method ("region_split_v0", "yolov8", etc.)
+    method          str     — extraction method ("detr", "region_split_v0")
 
 Embedding columns (added later by a separate encoding step):
 
@@ -30,21 +33,22 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Protocol
 
 import numpy as np
 import pandas as pd
 from PIL import Image
+from tqdm.auto import tqdm
 
 logger = logging.getLogger(__name__)
 
-# Category labels used by the v0 region splitter.
+# Categories from the fashion-object-detection model.
+DETR_CATEGORIES = ("top", "bottom", "dress", "outer", "shoes", "hat", "bag")
+
+# v0 region split categories (kept for backward compat / fallback).
 CATEGORY_UPPER = "upper_body"
 CATEGORY_LOWER = "lower_body"
 CATEGORY_FULL = "full_body"
-
-# All recognized categories (will grow with real detectors).
-ALL_CATEGORIES = (CATEGORY_UPPER, CATEGORY_LOWER, CATEGORY_FULL)
 
 
 @dataclass(frozen=True)
@@ -56,15 +60,89 @@ class GarmentRegion:
     bbox_y: int
     bbox_w: int
     bbox_h: int
+    confidence: float = float("nan")
 
 
 # ---------------------------------------------------------------------------
-# Region extraction — v0 heuristic split
+# Detector protocol
 # ---------------------------------------------------------------------------
 
-# Vertical split ratios for upper/lower body.
-# Upper body: top 55% of the image (includes head/shoulders context).
-# Lower body: bottom 55% (overlaps intentionally for waist coverage).
+
+class GarmentDetector(Protocol):
+    """Protocol for garment detection implementations."""
+
+    def detect(self, image: Image.Image) -> list[GarmentRegion]: ...
+
+
+# ---------------------------------------------------------------------------
+# DETR fashion detector
+# ---------------------------------------------------------------------------
+
+
+class FashionDETRDetector:
+    """Garment detector using yainage90/fashion-object-detection (Conditional DETR).
+
+    Categories: top, bottom, dress, outer, shoes, hat, bag.
+    """
+
+    def __init__(
+        self,
+        model_name: str = "yainage90/fashion-object-detection",
+        confidence_threshold: float = 0.5,
+        device: str | None = None,
+    ) -> None:
+        from transformers import AutoImageProcessor, AutoModelForObjectDetection
+        import torch
+
+        self._threshold = confidence_threshold
+        self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self._processor = AutoImageProcessor.from_pretrained(model_name)
+        self._model = AutoModelForObjectDetection.from_pretrained(model_name).to(self._device)
+        self._model.eval()
+        self._torch = torch
+
+        logger.info(
+            "FashionDETRDetector ready: %s on %s, threshold=%.2f",
+            model_name, self._device, confidence_threshold,
+        )
+
+    def detect(self, image: Image.Image) -> list[GarmentRegion]:
+        """Detect garments in a PIL image.  Returns list of GarmentRegion."""
+        inputs = self._processor(images=image, return_tensors="pt")
+        inputs = {k: v.to(self._device) for k, v in inputs.items()}
+
+        with self._torch.no_grad():
+            outputs = self._model(**inputs)
+
+        target_sizes = self._torch.tensor([image.size[::-1]]).to(self._device)
+        results = self._processor.post_process_object_detection(
+            outputs, target_sizes=target_sizes, threshold=self._threshold
+        )[0]
+
+        regions = []
+        for score, label_id, box in zip(
+            results["scores"], results["labels"], results["boxes"]
+        ):
+            x1, y1, x2, y2 = box.cpu().numpy().astype(int)
+            category = self._model.config.id2label[label_id.item()]
+            regions.append(
+                GarmentRegion(
+                    category=category,
+                    bbox_x=int(x1),
+                    bbox_y=int(y1),
+                    bbox_w=int(x2 - x1),
+                    bbox_h=int(y2 - y1),
+                    confidence=float(score.item()),
+                )
+            )
+
+        return regions
+
+
+# ---------------------------------------------------------------------------
+# Region extraction — v0 heuristic split (fallback)
+# ---------------------------------------------------------------------------
+
 _UPPER_RATIO = 0.55
 _LOWER_START_RATIO = 0.40
 
@@ -72,8 +150,7 @@ _LOWER_START_RATIO = 0.40
 def extract_regions_v0(image: Image.Image) -> list[GarmentRegion]:
     """Split an image into upper-body and lower-body regions.
 
-    This is a crude heuristic baseline — it assumes the image contains a
-    roughly centered person.  Replace with a real detector for production use.
+    Crude heuristic baseline — assumes a roughly centered person.
     """
     w, h = image.size
     if h < 20 or w < 20:
@@ -83,7 +160,7 @@ def extract_regions_v0(image: Image.Image) -> list[GarmentRegion]:
     lower_y = int(h * _LOWER_START_RATIO)
     lower_h = h - lower_y
 
-    regions = [
+    return [
         GarmentRegion(
             category=CATEGORY_UPPER,
             bbox_x=0, bbox_y=0,
@@ -95,7 +172,24 @@ def extract_regions_v0(image: Image.Image) -> list[GarmentRegion]:
             bbox_w=w, bbox_h=lower_h,
         ),
     ]
-    return regions
+
+
+# ---------------------------------------------------------------------------
+# Mock detector (for testing)
+# ---------------------------------------------------------------------------
+
+
+class MockDetector:
+    """Returns fixed garment regions.  Useful for testing without a model."""
+
+    def __init__(self, regions: list[GarmentRegion] | None = None) -> None:
+        self._regions = regions or [
+            GarmentRegion("top", 0, 0, 80, 60, confidence=0.95),
+            GarmentRegion("bottom", 0, 50, 80, 70, confidence=0.90),
+        ]
+
+    def detect(self, image: Image.Image) -> list[GarmentRegion]:
+        return self._regions
 
 
 # ---------------------------------------------------------------------------
@@ -111,11 +205,12 @@ def write_garment_crop(
     quality: int = 90,
 ) -> None:
     """Crop *region* from *source_image* and save to *output_path*."""
+    w, h = source_image.size
     box = (
-        region.bbox_x,
-        region.bbox_y,
-        region.bbox_x + region.bbox_w,
-        region.bbox_y + region.bbox_h,
+        max(0, region.bbox_x),
+        max(0, region.bbox_y),
+        min(w, region.bbox_x + region.bbox_w),
+        min(h, region.bbox_y + region.bbox_h),
     )
     crop = source_image.crop(box)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,7 +226,9 @@ def extract_garments_from_bundle(
     records: pd.DataFrame,
     bundle_dir: Path,
     *,
-    method: str = "region_split_v0",
+    method: str = "detr",
+    detector: GarmentDetector | None = None,
+    confidence_threshold: float = 0.5,
 ) -> pd.DataFrame:
     """Extract garment regions from all thumbnails in a bundle.
 
@@ -142,20 +239,25 @@ def extract_garments_from_bundle(
     bundle_dir:
         Root directory of the bundle.
     method:
-        Extraction method name.  Currently only ``"region_split_v0"`` is
-        implemented.
-
-    Returns
-    -------
-    DataFrame with the garments.parquet schema.
+        ``"detr"`` (default) uses the fashion DETR model.
+        ``"region_split_v0"`` uses the crude heuristic split.
+    detector:
+        Optional pre-initialized detector.  If *None*, one is created
+        based on *method*.  Pass a ``MockDetector`` for testing.
+    confidence_threshold:
+        Minimum confidence for DETR detections (ignored for v0).
     """
     crop_dir = bundle_dir / "garment_crops"
     crop_dir.mkdir(parents=True, exist_ok=True)
 
+    # Initialize detector if needed
+    if detector is None and method == "detr":
+        detector = FashionDETRDetector(confidence_threshold=confidence_threshold)
+
     garment_rows: list[dict] = []
     garment_id = 0
 
-    for _, row in records.iterrows():
+    for _, row in tqdm(records.iterrows(), total=len(records), desc="Detecting garments"):
         outfit_id = int(row["row_id"])
         thumb_rel = row.get("thumbnail_path", "")
         thumb_path = bundle_dir / thumb_rel if thumb_rel else None
@@ -168,6 +270,8 @@ def extract_garments_from_bundle(
 
         if method == "region_split_v0":
             regions = extract_regions_v0(image)
+        elif method == "detr":
+            regions = detector.detect(image)
         else:
             raise ValueError(f"Unknown garment extraction method: {method!r}")
 
@@ -186,6 +290,7 @@ def extract_garments_from_bundle(
                 "bbox_y": region.bbox_y,
                 "bbox_w": region.bbox_w,
                 "bbox_h": region.bbox_h,
+                "confidence": region.confidence,
                 "crop_path": crop_rel,
                 "method": method,
             })
@@ -227,8 +332,6 @@ def validate_garments(garments: pd.DataFrame, n_outfits: int) -> None:
 
     outfit_ids = set(garments["outfit_id"].unique())
     expected_ids = set(range(n_outfits))
-    # Not all outfits need garments (some may fail extraction), but
-    # no outfit_id should be outside the valid range.
     invalid = outfit_ids - expected_ids
     if invalid:
         raise ValueError(

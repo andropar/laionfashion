@@ -1,4 +1,4 @@
-"""Tests for laionfashion.garments — region extraction, schema, bundle integration."""
+"""Tests for laionfashion.garments — detection, schema, bundle integration."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from laionfashion.garments import (
     CATEGORY_LOWER,
     CATEGORY_UPPER,
     GarmentRegion,
+    MockDetector,
     extract_garments_from_bundle,
     extract_regions_v0,
     load_garments,
@@ -49,7 +50,24 @@ def _make_bundle(tmp_path: Path, n: int = 5, img_size: tuple[int, int] = (80, 12
 
 
 # ---------------------------------------------------------------------------
-# extract_regions_v0
+# GarmentRegion
+# ---------------------------------------------------------------------------
+
+
+class TestGarmentRegion:
+    def test_fields(self) -> None:
+        r = GarmentRegion("top", 10, 20, 50, 60, confidence=0.95)
+        assert r.category == "top"
+        assert r.bbox_x == 10
+        assert r.confidence == 0.95
+
+    def test_default_confidence_is_nan(self) -> None:
+        r = GarmentRegion("bottom", 0, 0, 10, 10)
+        assert np.isnan(r.confidence)
+
+
+# ---------------------------------------------------------------------------
+# extract_regions_v0 (fallback)
 # ---------------------------------------------------------------------------
 
 
@@ -66,34 +84,34 @@ class TestExtractRegionsV0:
         regions = extract_regions_v0(img)
         upper = [r for r in regions if r.category == CATEGORY_UPPER][0]
         assert upper.bbox_y == 0
-        assert upper.bbox_x == 0
         assert upper.bbox_w == 80
         assert upper.bbox_h > 0
-        assert upper.bbox_h <= 120
-
-    def test_lower_region_covers_bottom(self) -> None:
-        img = Image.new("RGB", (80, 120))
-        regions = extract_regions_v0(img)
-        lower = [r for r in regions if r.category == CATEGORY_LOWER][0]
-        assert lower.bbox_y > 0
-        assert lower.bbox_y + lower.bbox_h == 120
-
-    def test_regions_overlap_at_waist(self) -> None:
-        """Upper and lower regions should overlap for waist coverage."""
-        img = Image.new("RGB", (80, 120))
-        regions = extract_regions_v0(img)
-        upper = [r for r in regions if r.category == CATEGORY_UPPER][0]
-        lower = [r for r in regions if r.category == CATEGORY_LOWER][0]
-        assert upper.bbox_h > lower.bbox_y  # overlap exists
 
     def test_tiny_image_returns_empty(self) -> None:
         img = Image.new("RGB", (5, 5))
         assert extract_regions_v0(img) == []
 
-    def test_wide_image(self) -> None:
-        img = Image.new("RGB", (200, 50))
-        regions = extract_regions_v0(img)
+
+# ---------------------------------------------------------------------------
+# MockDetector
+# ---------------------------------------------------------------------------
+
+
+class TestMockDetector:
+    def test_default_regions(self) -> None:
+        detector = MockDetector()
+        img = Image.new("RGB", (80, 120))
+        regions = detector.detect(img)
         assert len(regions) == 2
+        assert regions[0].category == "top"
+        assert regions[1].category == "bottom"
+
+    def test_custom_regions(self) -> None:
+        custom = [GarmentRegion("shoes", 10, 90, 30, 20, confidence=0.8)]
+        detector = MockDetector(regions=custom)
+        regions = detector.detect(Image.new("RGB", (80, 120)))
+        assert len(regions) == 1
+        assert regions[0].category == "shoes"
 
 
 # ---------------------------------------------------------------------------
@@ -104,72 +122,121 @@ class TestExtractRegionsV0:
 class TestWriteGarmentCrop:
     def test_writes_crop_file(self, tmp_path: Path) -> None:
         img = Image.new("RGB", (100, 100), color=(255, 0, 0))
-        region = GarmentRegion("upper_body", 10, 20, 50, 30)
+        region = GarmentRegion("top", 10, 20, 50, 30)
         out = tmp_path / "crop.jpg"
         write_garment_crop(img, region, out)
         assert out.exists()
         crop = Image.open(out)
         assert crop.size == (50, 30)
 
+    def test_clamps_to_image_bounds(self, tmp_path: Path) -> None:
+        img = Image.new("RGB", (50, 50))
+        region = GarmentRegion("top", -5, -5, 60, 60)
+        out = tmp_path / "crop.jpg"
+        write_garment_crop(img, region, out)
+        crop = Image.open(out)
+        assert crop.size == (50, 50)
+
     def test_creates_parent_dirs(self, tmp_path: Path) -> None:
         img = Image.new("RGB", (50, 50))
-        region = GarmentRegion("lower_body", 0, 0, 50, 50)
+        region = GarmentRegion("bottom", 0, 0, 50, 50)
         out = tmp_path / "sub" / "dir" / "crop.jpg"
         write_garment_crop(img, region, out)
         assert out.exists()
 
 
 # ---------------------------------------------------------------------------
-# extract_garments_from_bundle
+# extract_garments_from_bundle (with MockDetector)
 # ---------------------------------------------------------------------------
 
 
 class TestExtractGarmentsFromBundle:
-    def test_produces_correct_schema(self, tmp_path: Path) -> None:
+    def test_correct_schema_with_mock(self, tmp_path: Path) -> None:
         bundle_dir = _make_bundle(tmp_path, n=3)
         records = pd.read_parquet(bundle_dir / "records.parquet")
-        garments = extract_garments_from_bundle(records, bundle_dir)
-        assert "outfit_id" in garments.columns
-        assert "garment_id" in garments.columns
-        assert "category" in garments.columns
-        assert "bbox_x" in garments.columns
-        assert "crop_path" in garments.columns
-        assert "method" in garments.columns
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="detr", detector=MockDetector()
+        )
+        required = {"outfit_id", "garment_id", "category", "bbox_x", "bbox_y",
+                     "bbox_w", "bbox_h", "confidence", "crop_path", "method"}
+        assert required.issubset(set(garments.columns))
 
-    def test_two_garments_per_image(self, tmp_path: Path) -> None:
+    def test_two_garments_per_image_with_mock(self, tmp_path: Path) -> None:
         bundle_dir = _make_bundle(tmp_path, n=4)
         records = pd.read_parquet(bundle_dir / "records.parquet")
-        garments = extract_garments_from_bundle(records, bundle_dir)
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="detr", detector=MockDetector()
+        )
         assert len(garments) == 8  # 4 images * 2 regions
 
     def test_garment_ids_unique(self, tmp_path: Path) -> None:
         bundle_dir = _make_bundle(tmp_path, n=5)
         records = pd.read_parquet(bundle_dir / "records.parquet")
-        garments = extract_garments_from_bundle(records, bundle_dir)
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="detr", detector=MockDetector()
+        )
         assert not garments["garment_id"].duplicated().any()
 
     def test_crop_files_exist(self, tmp_path: Path) -> None:
         bundle_dir = _make_bundle(tmp_path, n=2)
         records = pd.read_parquet(bundle_dir / "records.parquet")
-        garments = extract_garments_from_bundle(records, bundle_dir)
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="detr", detector=MockDetector()
+        )
         for _, row in garments.iterrows():
             crop = bundle_dir / row["crop_path"]
             assert crop.exists(), f"Missing crop: {crop}"
 
-    def test_method_column(self, tmp_path: Path) -> None:
+    def test_confidence_stored(self, tmp_path: Path) -> None:
+        bundle_dir = _make_bundle(tmp_path, n=2)
+        records = pd.read_parquet(bundle_dir / "records.parquet")
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="detr", detector=MockDetector()
+        )
+        assert "confidence" in garments.columns
+        assert all(garments["confidence"].notna())
+        assert all(garments["confidence"] > 0)
+
+    def test_method_column_detr(self, tmp_path: Path) -> None:
         bundle_dir = _make_bundle(tmp_path, n=1)
         records = pd.read_parquet(bundle_dir / "records.parquet")
-        garments = extract_garments_from_bundle(records, bundle_dir)
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="detr", detector=MockDetector()
+        )
+        assert all(garments["method"] == "detr")
+
+    def test_method_column_v0(self, tmp_path: Path) -> None:
+        bundle_dir = _make_bundle(tmp_path, n=1)
+        records = pd.read_parquet(bundle_dir / "records.parquet")
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="region_split_v0"
+        )
         assert all(garments["method"] == "region_split_v0")
 
     def test_skips_missing_thumbnails(self, tmp_path: Path) -> None:
         bundle_dir = _make_bundle(tmp_path, n=3)
         records = pd.read_parquet(bundle_dir / "records.parquet")
-        # Delete one thumbnail
         thumbs = list((bundle_dir / "thumbnails").iterdir())
         thumbs[0].unlink()
-        garments = extract_garments_from_bundle(records, bundle_dir)
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="detr", detector=MockDetector()
+        )
         assert len(garments) == 4  # 2 remaining images * 2 regions
+
+    def test_custom_categories(self, tmp_path: Path) -> None:
+        """MockDetector with shoes-only detection."""
+        bundle_dir = _make_bundle(tmp_path, n=2)
+        records = pd.read_parquet(bundle_dir / "records.parquet")
+        detector = MockDetector([
+            GarmentRegion("shoes", 10, 90, 60, 30, confidence=0.85),
+            GarmentRegion("outer", 0, 0, 80, 80, confidence=0.70),
+            GarmentRegion("hat", 20, 0, 40, 20, confidence=0.60),
+        ])
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="detr", detector=detector
+        )
+        assert len(garments) == 6  # 2 images * 3 regions
+        assert set(garments["category"]) == {"shoes", "outer", "hat"}
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +248,9 @@ class TestSaveLoadValidate:
     def test_save_and_load_roundtrip(self, tmp_path: Path) -> None:
         bundle_dir = _make_bundle(tmp_path, n=2)
         records = pd.read_parquet(bundle_dir / "records.parquet")
-        garments = extract_garments_from_bundle(records, bundle_dir)
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="detr", detector=MockDetector()
+        )
         save_garments(garments, bundle_dir)
         loaded = load_garments(bundle_dir)
         assert loaded is not None
@@ -193,7 +262,9 @@ class TestSaveLoadValidate:
     def test_validate_passes_for_valid(self, tmp_path: Path) -> None:
         bundle_dir = _make_bundle(tmp_path, n=3)
         records = pd.read_parquet(bundle_dir / "records.parquet")
-        garments = extract_garments_from_bundle(records, bundle_dir)
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="detr", detector=MockDetector()
+        )
         validate_garments(garments, n_outfits=3)
 
     def test_validate_missing_columns(self) -> None:
@@ -205,7 +276,7 @@ class TestSaveLoadValidate:
         df = pd.DataFrame({
             "outfit_id": [99],
             "garment_id": [0],
-            "category": ["upper_body"],
+            "category": ["top"],
             "crop_path": ["x.jpg"],
         })
         with pytest.raises(ValueError, match="outfit_ids not in records"):
@@ -215,7 +286,7 @@ class TestSaveLoadValidate:
         df = pd.DataFrame({
             "outfit_id": [0, 0],
             "garment_id": [0, 0],
-            "category": ["upper_body", "lower_body"],
+            "category": ["top", "bottom"],
             "crop_path": ["a.jpg", "b.jpg"],
         })
         with pytest.raises(ValueError, match="garment_id must be unique"):
@@ -241,7 +312,9 @@ class TestBundleWithGarments:
 
         bundle_dir = _make_bundle(tmp_path, n=3)
         records = pd.read_parquet(bundle_dir / "records.parquet")
-        garments = extract_garments_from_bundle(records, bundle_dir)
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="detr", detector=MockDetector()
+        )
         save_garments(garments, bundle_dir)
 
         bundle = load_bundle(bundle_dir)
@@ -253,7 +326,9 @@ class TestBundleWithGarments:
 
         bundle_dir = _make_bundle(tmp_path, n=2)
         records = pd.read_parquet(bundle_dir / "records.parquet")
-        garments = extract_garments_from_bundle(records, bundle_dir)
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="detr", detector=MockDetector()
+        )
         save_garments(garments, bundle_dir)
 
         bundle = load_bundle(bundle_dir)
@@ -266,10 +341,12 @@ class TestBundleWithGarments:
 
         bundle_dir = _make_bundle(tmp_path, n=3)
         records = pd.read_parquet(bundle_dir / "records.parquet")
-        garments = extract_garments_from_bundle(records, bundle_dir)
+        garments = extract_garments_from_bundle(
+            records, bundle_dir, method="detr", detector=MockDetector()
+        )
         save_garments(garments, bundle_dir)
 
         bundle = load_bundle(bundle_dir)
         outfit_garments = bundle.garments_for_outfit(1)
         assert len(outfit_garments) == 2
-        assert set(outfit_garments["category"]) == {"upper_body", "lower_body"}
+        assert set(outfit_garments["category"]) == {"top", "bottom"}

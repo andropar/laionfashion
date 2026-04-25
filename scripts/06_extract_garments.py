@@ -2,13 +2,15 @@
 """Extract garment regions from a debug bundle's thumbnails.
 
 Usage:
-    python scripts/06_extract_garments.py <bundle_dir> [--method region_split_v0]
+    python scripts/06_extract_garments.py <bundle_dir> [--method detr]
 
 Writes garment_crops/ and garments.parquet into the bundle directory.
 
-The v0 method is a crude upper/lower body split — it exists to unblock the
-retrieval and evaluation pipeline.  Replace with a real garment detector
-(YOLOv8, Grounding DINO, etc.) when available.
+Methods:
+- detr (default): Uses yainage90/fashion-object-detection (Conditional DETR).
+  Categories: top, bottom, dress, outer, shoes, hat, bag.
+  Requires: transformers, torch.
+- region_split_v0: Crude upper/lower body split. No model required.
 """
 from __future__ import annotations
 
@@ -36,8 +38,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--method",
         type=str,
-        default="region_split_v0",
-        help="Extraction method (default: region_split_v0).",
+        choices=["detr", "region_split_v0"],
+        default="detr",
+        help="Detection method (default: detr).",
+    )
+    parser.add_argument(
+        "--confidence-threshold",
+        type=float,
+        default=0.5,
+        help="Minimum confidence for DETR detections (default: 0.5).",
     )
     return parser.parse_args()
 
@@ -52,17 +61,30 @@ def main() -> None:
         bundle.records,
         args.bundle_dir,
         method=args.method,
+        confidence_threshold=args.confidence_threshold,
     )
     validate_garments(garments, bundle.n_images)
 
     n_garments = len(garments)
     categories = garments["category"].value_counts().to_dict()
-    print(f"Extracted {n_garments} garment regions:")
+    print(f"\nExtracted {n_garments} garment regions:")
     for cat, count in sorted(categories.items()):
         print(f"  {cat}: {count}")
 
+    if "confidence" in garments.columns:
+        conf = garments["confidence"].dropna()
+        if len(conf) > 0:
+            print(f"\nConfidence: min={conf.min():.3f}, mean={conf.mean():.3f}, max={conf.max():.3f}")
+
+    # Per-outfit stats
+    per_outfit = garments.groupby("outfit_id").size()
+    print(f"\nGarments per outfit: min={per_outfit.min()}, mean={per_outfit.mean():.1f}, max={per_outfit.max()}")
+    no_garments = bundle.n_images - garments["outfit_id"].nunique()
+    if no_garments > 0:
+        print(f"Outfits with no detected garments: {no_garments}")
+
     out_path = save_garments(garments, args.bundle_dir)
-    print(f"Wrote {out_path}")
+    print(f"\nWrote {out_path}")
 
     # Update manifest
     manifest_path = args.bundle_dir / "manifest.json"
@@ -74,11 +96,15 @@ def main() -> None:
             "n_garments": n_garments,
             "method": args.method,
             "categories": categories,
-            "caveat": (
-                "v0 uses a crude upper/lower body split, not a real garment detector. "
-                "Region boundaries are approximate."
-            ),
+            "garments_per_outfit": {
+                "min": int(per_outfit.min()),
+                "mean": round(float(per_outfit.mean()), 1),
+                "max": int(per_outfit.max()),
+            },
         }
+        if args.method == "detr":
+            manifest["garments"]["model"] = "yainage90/fashion-object-detection"
+            manifest["garments"]["confidence_threshold"] = args.confidence_threshold
         with manifest_path.open("w") as f:
             json.dump(manifest, f, indent=2)
         print("Updated manifest.json with garment info.")
