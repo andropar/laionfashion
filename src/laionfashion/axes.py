@@ -203,33 +203,33 @@ class PromptAxis:
 DEFAULT_PROMPT_AXES: tuple[PromptAxis, ...] = (
     PromptAxis(
         name="minimalist_vs_maximalist",
-        positive="a minimalist clean outfit with simple lines",
-        negative="a busy cluttered maximalist outfit with many patterns",
+        positive="a minimalist clean simple outfit, plain colors, few accessories",
+        negative="a maximalist layered busy outfit with bold prints and many accessories",
     ),
     PromptAxis(
         name="formal_vs_casual",
-        positive="a formal business outfit, suit, tie, professional attire",
-        negative="a casual everyday outfit, relaxed clothing, t-shirt and jeans",
+        positive="a person in formal professional attire, tailored suit, dress shirt, office wear",
+        negative="a person in casual relaxed clothes, t-shirt, sweatpants, loungewear",
     ),
     PromptAxis(
         name="streetwear_vs_classic",
-        positive="a streetwear outfit, urban style, sneakers, hoodie",
-        negative="a classic formal outfit, traditional style, dress shoes",
+        positive="a person in urban streetwear, oversized hoodie, sneakers, graphic tee, skate style",
+        negative="a person in classic traditional clothing, blazer, oxford shoes, preppy style",
     ),
     PromptAxis(
         name="colorful_vs_neutral",
-        positive="a colorful vibrant outfit with bright bold colors",
-        negative="a neutral monochrome outfit in black white grey beige",
+        positive="a colorful vibrant outfit with bright bold saturated colors, red yellow blue green",
+        negative="a neutral muted outfit in black white grey beige, monochrome, earth tones",
     ),
     PromptAxis(
         name="polished_vs_rough",
-        positive="a polished well-coordinated put-together outfit",
-        negative="a rough rugged worn distressed outfit",
+        positive="a polished well-coordinated put-together look, pressed clean fabrics, neat",
+        negative="a rough rugged distressed look, worn denim, faded fabrics, grunge style",
     ),
     PromptAxis(
-        name="sporty_vs_elegant",
-        positive="a sporty athletic outfit, activewear, sneakers",
-        negative="an elegant evening outfit, gown, heels, formal dress",
+        name="sporty_vs_dressy",
+        positive="a person in sporty athletic wear, running shoes, leggings, track jacket, gym clothes",
+        negative="a person dressed up for an occasion, cocktail dress, heels, evening wear",
     ),
 )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import streamlit as st
 import pandas as pd
 from pathlib import Path
@@ -51,6 +52,37 @@ def _load_axes(bundle_dir: str) -> pd.DataFrame | None:
     return load_axis_scores(bundle_dir)
 
 
+@st.cache_data
+def _load_manifest(bundle_dir: str) -> dict | None:
+    p = Path(bundle_dir) / "manifest.json"
+    if p.exists():
+        with p.open() as f:
+            return json.load(f)
+    return None
+
+
+def _format_axis_name(name: str) -> str:
+    """Format axis column name for display: 'formal_vs_casual' → 'Formal vs casual'."""
+    return name.replace("_", " ").capitalize()
+
+
+def _axis_prompt_info(manifest: dict | None, axis_name: str) -> tuple[str | None, str | None]:
+    """Extract positive/negative prompt texts for an axis from the manifest."""
+    if manifest is None:
+        return None, None
+    axis_info = manifest.get("axis_scores", {})
+    prompts = axis_info.get("prompts", {})
+    ax = prompts.get(axis_name, {})
+    return ax.get("positive"), ax.get("negative")
+
+
+def _is_clip_axes(manifest: dict | None) -> bool:
+    """Check if axis scores were computed with CLIP prompt directions."""
+    if manifest is None:
+        return False
+    return manifest.get("axis_scores", {}).get("method") == "clip_prompt_direction"
+
+
 # Auto-detect: if the user points at the parent outputs dir, list available bundles
 bundle_dir = Path(bundle_path)
 if bundle_dir.is_dir() and not (bundle_dir / "embeddings.npy").exists():
@@ -81,6 +113,8 @@ except (FileNotFoundError, ValueError) as exc:
 
 projection = _load_projection(str(bundle_dir))
 axis_scores = _load_axes(str(bundle_dir))
+manifest = _load_manifest(str(bundle_dir))
+clip_axes = _is_clip_axes(manifest)
 
 st.sidebar.success(f"Loaded {bundle.n_images} images from `{bundle_dir.name}`")
 if projection is not None:
@@ -99,18 +133,26 @@ available_axes = axis_names(axis_scores) if axis_scores is not None else []
 selected_axis: str | None = None
 if available_axes:
     st.sidebar.markdown("---")
-    st.sidebar.subheader("Style-axis proxy")
+    if clip_axes:
+        st.sidebar.subheader("Style axis")
+    else:
+        st.sidebar.subheader("Style axis (proxy)")
     selected_axis = st.sidebar.selectbox(
         "Color map by axis",
         ["(none)"] + available_axes,
+        format_func=lambda x: "(none)" if x == "(none)" else _format_axis_name(x),
     )
     if selected_axis == "(none)":
         selected_axis = None
     if selected_axis:
-        st.sidebar.caption(
-            "Demo/proxy axis — derived from embedding PCA and caption keywords, "
-            "not a real prompt-direction score."
-        )
+        pos_prompt, neg_prompt = _axis_prompt_info(manifest, selected_axis)
+        if pos_prompt and neg_prompt:
+            st.sidebar.caption(f"**+** {pos_prompt}")
+            st.sidebar.caption(f"**\u2212** {neg_prompt}")
+        elif not clip_axes:
+            st.sidebar.caption(
+                "Proxy axis — derived from embedding PCA and caption keywords."
+            )
 
 # ---------------------------------------------------------------------------
 # Shared state: selected image index
@@ -147,12 +189,27 @@ if projection is not None:
         proj = proj.merge(
             axis_scores[["row_id", selected_axis]], on="row_id", how="left"
         )
+        # Auto-scale colorbar to data range
+        axis_vals = proj[selected_axis].dropna()
+        cmin = float(axis_vals.min())
+        cmax = float(axis_vals.max())
+        # Symmetric around zero if the range crosses it
+        if cmin < 0 and cmax > 0:
+            bound = max(abs(cmin), abs(cmax))
+            cmin, cmax = -bound, bound
 
     fig = go.Figure()
 
     # Background points
     mask_bg = ~is_selected & ~is_neighbor
     if use_axis_color:
+        # Build hover text with axis score
+        hover_texts = []
+        for _, r in proj.loc[mask_bg].iterrows():
+            hover_texts.append(
+                f"{r['caption_short']}<br>"
+                f"{_format_axis_name(selected_axis)}: {r[selected_axis]:.3f}"
+            )
         fig.add_trace(
             go.Scatter(
                 x=proj.loc[mask_bg, "x"],
@@ -162,12 +219,12 @@ if projection is not None:
                     size=7,
                     color=proj.loc[mask_bg, selected_axis],
                     colorscale="RdYlBu_r",
-                    cmin=-1,
-                    cmax=1,
-                    colorbar=dict(title=selected_axis.replace("_", " ")),
+                    cmin=cmin,
+                    cmax=cmax,
+                    colorbar=dict(title=_format_axis_name(selected_axis)),
                     opacity=0.7,
                 ),
-                text=proj.loc[mask_bg, "caption_short"],
+                text=hover_texts,
                 customdata=proj.loc[mask_bg, "row_id"],
                 hovertemplate="%{text}<br>row_id=%{customdata}<extra></extra>",
                 name="Other",
@@ -240,16 +297,35 @@ else:
 # ---------------------------------------------------------------------------
 
 if selected_axis and axis_scores is not None:
-    st.header(f"Axis: {selected_axis.replace('_', ' ')}")
-    st.caption("Demo/proxy axis — not a real prompt-direction score.")
+    st.header(_format_axis_name(selected_axis))
+
+    # Show prompt interpretation if available
+    pos_prompt, neg_prompt = _axis_prompt_info(manifest, selected_axis)
+    if pos_prompt and neg_prompt:
+        pcol1, pcol2 = st.columns(2)
+        with pcol1:
+            st.markdown(f"**\u2192 High:** {pos_prompt}")
+        with pcol2:
+            st.markdown(f"**\u2190 Low:** {neg_prompt}")
+        st.caption(
+            "CLIP prompt-direction axis — scores reflect cosine similarity "
+            "with the positive vs. negative prompt direction, not ground-truth labels."
+        )
+    elif not clip_axes:
+        st.caption("Proxy axis — derived from embedding PCA and caption keywords.")
 
     n_examples = min(5, bundle.n_images // 2) if bundle.n_images >= 4 else bundle.n_images
     top_ids, bottom_ids = top_bottom_indices(axis_scores, selected_axis, n=n_examples)
 
+    # Determine positive/negative endpoint labels
+    parts = selected_axis.split("_vs_")
+    high_label = parts[0].replace("_", " ").capitalize() if len(parts) == 2 else "Highest"
+    low_label = parts[1].replace("_", " ").capitalize() if len(parts) == 2 else "Lowest"
+
     col_top, col_bottom = st.columns(2)
 
     with col_top:
-        st.subheader("Highest scoring")
+        st.subheader(f"\u2191 {high_label}")
         cols = st.columns(min(n_examples, N_COLS))
         for j, rid in enumerate(top_ids):
             col = cols[j % len(cols)]
@@ -260,10 +336,10 @@ if selected_axis and axis_scores is not None:
                     st.image(str(thumb), use_container_width=True)
                 else:
                     st.write("*(no thumbnail)*")
-                st.caption(f"score={score_val:.2f}")
+                st.caption(f"{score_val:.3f}")
 
     with col_bottom:
-        st.subheader("Lowest scoring")
+        st.subheader(f"\u2193 {low_label}")
         cols = st.columns(min(n_examples, N_COLS))
         for j, rid in enumerate(bottom_ids):
             col = cols[j % len(cols)]
@@ -274,12 +350,13 @@ if selected_axis and axis_scores is not None:
                     st.image(str(thumb), use_container_width=True)
                 else:
                     st.write("*(no thumbnail)*")
-                st.caption(f"score={score_val:.2f}")
+                st.caption(f"{score_val:.3f}")
 
 elif axis_scores is None and projection is not None:
     st.info(
-        "No axis scores found. Run `python scripts/03_build_demo_axes.py <bundle_dir>` "
-        "to generate demo/proxy axes."
+        "No axis scores found. Run `python scripts/05_build_clip_axes.py <bundle_dir>` "
+        "to compute CLIP prompt-direction axes, or `python scripts/03_build_demo_axes.py "
+        "<bundle_dir>` for proxy axes."
     )
 
 # ---------------------------------------------------------------------------
@@ -340,12 +417,17 @@ with qcol1:
 with qcol2:
     st.write(f"**Caption:** {query_row.get('caption', 'N/A')}")
     st.write(f"**Global index:** {query_row.get('global_index', 'N/A')}")
-    # Show axis scores for selected image if available
+    if "image_outfit_score" in query_row.index:
+        st.write(f"**Outfit score:** {query_row['image_outfit_score']:.4f}")
+    # Show axis scores for selected image
     if axis_scores is not None and available_axes:
         scores_row = axis_scores.loc[axis_scores["row_id"] == selected_idx]
         if not scores_row.empty:
-            score_strs = [f"{a}: {float(scores_row[a].iloc[0]):.2f}" for a in available_axes]
-            st.write(f"**Axis scores:** {' · '.join(score_strs)}")
+            score_strs = [
+                f"{_format_axis_name(a)}: {float(scores_row[a].iloc[0]):.3f}"
+                for a in available_axes
+            ]
+            st.write("**Axis scores:**  \n" + "  \n".join(score_strs))
 
 # Show neighbors
 st.subheader(f"Top {k} neighbors")
