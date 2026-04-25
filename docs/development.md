@@ -72,6 +72,17 @@ scripts/outputs/<script_name>/<timestamp>_<id>/
 
 These outputs are ignored by git. For local UI development, copy only small derived bundles: metadata tables, thumbnails, embeddings/projections, and indices. Do not expose raw LAION images publicly.
 
+## Running the Streamlit App
+
+```bash
+pip install -e ".[app]"
+streamlit run app/streamlit_app.py
+```
+
+The app works entirely against exported debug bundles — no Raven paths required. Enter the bundle directory path in the sidebar (or point at `scripts/outputs/01_build_debug_subset/` to pick from sub-bundles).
+
+To get a bundle from Raven, copy the output directory (e.g. via `scp -r raven:/u/rothj/laionfashion/scripts/outputs/01_build_debug_subset/<timestamp>_<id> ./scripts/outputs/01_build_debug_subset/`) to your local checkout.
+
 ## First MVP Bias
 
 Start with full-image/outfit-level retrieval. Add person crops, garment parsing, and compatibility only after the basic map and nearest-neighbor demo are compelling.

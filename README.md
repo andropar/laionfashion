@@ -70,6 +70,23 @@ python /u/rothj/laion_natural/scripts/start_as_slurm_job.py \
 
 Outputs are written to `scripts/outputs/<script_name>/<timestamp>_<id>/` and ignored by git.
 
+## Local Explorer App
+
+Browse debug bundles locally with the Streamlit app:
+
+```bash
+pip install -e ".[app]"
+streamlit run app/streamlit_app.py
+```
+
+Point the sidebar at a bundle directory (or the parent `scripts/outputs/01_build_debug_subset/` to pick from available bundles). Each bundle should contain:
+
+- `records.parquet` (or `records.csv`)
+- `embeddings.npy` – normalized float32 embeddings
+- `thumbnails/` – JPEG thumbnails referenced by the records table
+
+The app shows an image grid with captions, lets you select any image by index, and displays its nearest neighbors by cosine similarity.
+
 ## Current Scope
 
 This scaffold intentionally does not start with segmentation or model training. The immediate next step is to produce a visually inspectable debug subset and confirm that nearest neighbors/style axes are interesting enough before adding garment-level logic.
