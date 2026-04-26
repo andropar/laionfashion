@@ -125,9 +125,21 @@ def main() -> None:
                         ]
                 if cross:
                     garment_neighbors[str(gid)] = cross
-            with (out / "garment_neighbors.json").open("w") as f:
-                json.dump(garment_neighbors, f)
-            print(f"  garment_neighbors.json: {len(garment_neighbors)} garments with cross-category data")
+            # Write per-outfit neighbor files for lazy loading (avoids 96MB monolith)
+            gid_to_outfit = {g["garment_id"]: g["outfit_id"] for g in garment_data}
+            per_outfit: dict[int, dict] = {}
+            for gid_str, cats in garment_neighbors.items():
+                oid = gid_to_outfit.get(int(gid_str))
+                if oid is not None:
+                    per_outfit.setdefault(oid, {})[gid_str] = cats
+            gn_dir = out / "gn"
+            if gn_dir.exists():
+                shutil.rmtree(gn_dir)
+            gn_dir.mkdir()
+            for oid, data in per_outfit.items():
+                with (gn_dir / f"{oid}.json").open("w") as f:
+                    json.dump(data, f, separators=(",", ":"))
+            print(f"  gn/: {len(per_outfit)} per-outfit neighbor files")
 
     # 5. Config
     manifest = json.load((args.bundle_dir / "manifest.json").open())

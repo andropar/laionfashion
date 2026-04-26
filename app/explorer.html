@@ -1028,25 +1028,32 @@ function switchStrip(name) {
 /* ═══════════════════════════════════════════════════════════════════
    CROSS-CATEGORY RETRIEVAL
    ═══════════════════════════════════════════════════════════════════ */
-let garmentNeighborsLoadPromise = null;
+// Cache per-outfit garment neighbors (lazy loaded)
+const gnCache = {};
 
-async function ensureGarmentNeighbors() {
-  if (DATA.garment_neighbors_compact) return;
-  if (garmentNeighborsLoadPromise) return garmentNeighborsLoadPromise;
-  garmentNeighborsLoadPromise = fetch('dashboard_data/garment_neighbors_compact.json')
-    .then(r => r.json())
-    .then(d => { DATA.garment_neighbors_compact = d; });
-  return garmentNeighborsLoadPromise;
+async function loadOutfitGarmentNeighbors(outfitId) {
+  if (gnCache[outfitId]) return gnCache[outfitId];
+  try {
+    const resp = await fetch(`dashboard_data/gn/${outfitId}.json`);
+    if (!resp.ok) return {};
+    const data = await resp.json();
+    gnCache[outfitId] = data;
+    return data;
+  } catch {
+    return {};
+  }
 }
 
 async function showCrossCategory(garmentId, category, cropPath) {
   const panel = document.getElementById('cross-cat-panel');
   panel.classList.add('visible');
-  panel.innerHTML = `<h3>Cross-Category Results</h3><div style="color:var(--text3);font-size:12px;">Loading garment neighbors...</div>`;
+  panel.innerHTML = `<h3>Cross-Category Results</h3><div style="color:var(--text3);font-size:12px;">Loading...</div>`;
 
-  await ensureGarmentNeighbors();
-
-  const neighbors = DATA.garment_neighbors_compact[String(garmentId)];
+  // Find which outfit this garment belongs to
+  const garment = DATA.garments.find(g => g.garment_id === garmentId);
+  if (!garment) { panel.innerHTML = '<h3>Not found</h3>'; return; }
+  const outfitNeighbors = await loadOutfitGarmentNeighbors(garment.outfit_id);
+  const neighbors = outfitNeighbors[String(garmentId)];
   if (!neighbors) {
     panel.innerHTML = `<h3>Cross-Category Results</h3><div style="color:var(--text3);font-size:12px;">No cross-category data for this garment.</div>`;
     return;
