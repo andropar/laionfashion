@@ -100,7 +100,7 @@ body::after {
 
 /* Main area */
 .workspace {
-  flex: 1; display: grid; grid-template-columns: 1fr 340px;
+  flex: 1; display: grid; grid-template-columns: 1fr 300px;
   overflow: hidden; min-height: 0;
 }
 
@@ -112,6 +112,35 @@ body::after {
 #scatter-plot { width: 100%; height: 100%; }
 
 /* Hover tooltip */
+/* Lightbox for full-res image */
+#lightbox {
+  display: none; position: fixed; inset: 0; z-index: 5000;
+  background: rgba(0,0,0,0.92); backdrop-filter: blur(12px);
+  align-items: center; justify-content: center; cursor: zoom-out;
+}
+#lightbox.visible { display: flex; animation: fadeIn 0.25s ease; }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+#lightbox img {
+  max-width: 90vw; max-height: 85vh; object-fit: contain; border-radius: 8px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+#lightbox .lb-info {
+  position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 16px; font-size: 12px; color: var(--text2); max-width: 600px;
+  text-align: center;
+}
+#lightbox .lb-close {
+  position: absolute; top: 20px; right: 24px; font-size: 28px; color: var(--text2);
+  cursor: pointer; width: 40px; height: 40px; display: flex; align-items: center;
+  justify-content: center; border-radius: 50%; transition: all 0.2s;
+}
+#lightbox .lb-close:hover { color: var(--text); background: var(--surface2); }
+#lightbox .lb-status {
+  position: absolute; top: 20px; left: 24px; font-size: 11px; color: var(--text3);
+  padding: 4px 10px; background: var(--surface2); border-radius: 4px;
+}
+
 #hover-card {
   position: fixed; z-index: 1000; pointer-events: none;
   display: none; width: 180px;
@@ -152,15 +181,16 @@ body::after {
 
 /* Neighbor row */
 .neighbor-row {
-  display: flex; gap: 10px; padding: 10px 20px; overflow-x: auto; flex-shrink: 0;
-  scrollbar-width: thin;
+  display: flex; gap: 10px; padding: 12px 20px; overflow-x: auto; flex-shrink: 0;
+  scrollbar-width: thin; min-height: 160px;
 }
 .neighbor-card {
-  flex-shrink: 0; width: 80px; cursor: pointer; position: relative;
+  flex-shrink: 0; width: 100px; cursor: pointer; position: relative;
   border-radius: var(--radius); overflow: hidden; transition: transform var(--transition);
+  border: 1px solid var(--border);
 }
-.neighbor-card:hover { transform: scale(1.05); }
-.neighbor-card img { width: 80px; height: 100px; object-fit: cover; display: block; }
+.neighbor-card:hover { transform: scale(1.06); border-color: var(--accent2); }
+.neighbor-card img { width: 100px; height: 130px; object-fit: cover; display: block; }
 .neighbor-card .sim-badge {
   position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.7);
   font-size: 10px; text-align: center; padding: 2px; color: var(--accent);
@@ -427,7 +457,14 @@ body::after {
     <div class="map-column">
       <div id="map-container">
         <div id="scatter-plot"></div>
-        <div id="hover-card">
+        <div id="lightbox" onclick="if(event.target===this)closeLightbox()">
+  <div class="lb-close" onclick="closeLightbox()">&times;</div>
+  <div class="lb-status" id="lb-status"></div>
+  <img id="lb-img" src="" alt="">
+  <div class="lb-info" id="lb-info"></div>
+</div>
+
+<div id="hover-card">
           <img id="hover-img" src="" alt="">
           <div class="hover-info">
             <div class="hover-caption" id="hover-caption"></div>
@@ -670,27 +707,28 @@ function getMapColors() {
 
 function getPointSizes() {
   const n = DATA.projection.length;
-  const sizes = new Array(n).fill(6);
-  if (STATE.selectedId !== null) sizes[STATE.selectedId] = 12;
-  // Highlight neighbors
-  if (STATE.selectedId !== null && DATA.neighbors[String(STATE.selectedId)]) {
-    DATA.neighbors[String(STATE.selectedId)].forEach(nb => {
-      if (nb.row_id < n) sizes[nb.row_id] = 8;
-    });
+  const sizes = new Array(n).fill(5);
+  if (STATE.selectedId !== null) {
+    // Dim everything slightly, highlight selection and neighbors
+    sizes[STATE.selectedId] = 16;
+    if (DATA.neighbors[String(STATE.selectedId)]) {
+      DATA.neighbors[String(STATE.selectedId)].forEach(nb => {
+        if (nb.row_id < n) sizes[nb.row_id] = 9;
+      });
+    }
   }
   return sizes;
 }
 
 function getPointOpacities() {
   const n = DATA.projection.length;
-  const opacities = new Array(n).fill(0.7);
-  if (STATE.selectedId !== null) {
-    opacities[STATE.selectedId] = 1;
-    if (DATA.neighbors[String(STATE.selectedId)]) {
-      DATA.neighbors[String(STATE.selectedId)].forEach(nb => {
-        if (nb.row_id < n) opacities[nb.row_id] = 0.95;
-      });
-    }
+  if (STATE.selectedId === null) return new Array(n).fill(0.65);
+  const opacities = new Array(n).fill(0.3);
+  opacities[STATE.selectedId] = 1;
+  if (DATA.neighbors[String(STATE.selectedId)]) {
+    DATA.neighbors[String(STATE.selectedId)].forEach(nb => {
+      if (nb.row_id < n) opacities[nb.row_id] = 0.9;
+    });
   }
   return opacities;
 }
@@ -725,7 +763,7 @@ function buildMap() {
         x: info.cx, y: info.cy,
         text: CLUSTER_NAMES[parseInt(cid)] || info.label,
         showarrow: false,
-        font: { family: 'Cormorant Garamond, serif', size: 13, color: 'rgba(236,233,228,0.45)' },
+        font: { family: 'Cormorant Garamond, serif', size: 14, color: 'rgba(236,233,228,0.65)' },
       });
     }
   }
@@ -879,7 +917,7 @@ function renderSelectedPanel(rowId) {
   const clusterName = CLUSTER_NAMES[p.cluster_id] || p.cluster_label;
 
   panel.innerHTML = `
-    <div class="sp-thumb-wrap">
+    <div class="sp-thumb-wrap" style="cursor:zoom-in" onclick="openLightbox(${rowId})">
       <img class="sp-thumb" src="${thumbUrl(rowId)}" alt="Outfit ${rowId}">
       ${p.outfit_score != null ? `<div class="sp-score-badge">Score ${p.outfit_score.toFixed(3)}</div>` : ''}
     </div>
@@ -1252,6 +1290,56 @@ function buildDatasetInfo() {
 /* ═══════════════════════════════════════════════════════════════════
    EVENTS
    ═══════════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════
+   LIGHTBOX — full-res image from original URL
+   ═══════════════════════════════════════════════════════════════════ */
+function openLightbox(rowId) {
+  const p = DATA.projection[rowId];
+  if (!p) return;
+  const lb = document.getElementById('lightbox');
+  const img = document.getElementById('lb-img');
+  const info = document.getElementById('lb-info');
+  const status = document.getElementById('lb-status');
+
+  const url = p.url;
+  if (!url) {
+    // No URL — just show the thumbnail large
+    img.src = thumbUrl(rowId);
+    status.textContent = 'Thumbnail (no source URL)';
+  } else {
+    // Try loading the original URL
+    status.textContent = 'Loading original image...';
+    img.src = '';
+    const testImg = new Image();
+    testImg.onload = () => {
+      img.src = url;
+      status.textContent = `Original ${testImg.naturalWidth}×${testImg.naturalHeight}`;
+    };
+    testImg.onerror = () => {
+      // Fallback to thumbnail
+      img.src = thumbUrl(rowId);
+      status.textContent = 'Original unavailable — showing thumbnail';
+    };
+    // Set a timeout for slow loads
+    setTimeout(() => {
+      if (!img.src) {
+        img.src = thumbUrl(rowId);
+        status.textContent = 'Original timed out — showing thumbnail';
+      }
+    }, 5000);
+    testImg.src = url;
+  }
+
+  info.textContent = (p.caption || '').slice(0, 200);
+  lb.classList.add('visible');
+}
+
+function closeLightbox() {
+  const lb = document.getElementById('lightbox');
+  lb.classList.remove('visible');
+  document.getElementById('lb-img').src = '';
+}
+
 function bindEvents() {
   // Strip tabs
   document.querySelectorAll('.strip-tab').forEach(tab => {
@@ -1293,6 +1381,7 @@ function bindEvents() {
       }
     }
     if (e.key === 'Escape') {
+      closeLightbox();
       hideCrossCategory();
     }
   });
