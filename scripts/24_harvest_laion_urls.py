@@ -16,10 +16,15 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import sys
 import tarfile
 import time
 from pathlib import Path
+
+# Force unbuffered output for SLURM
+os.environ["PYTHONUNBUFFERED"] = "1"
+sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, "reconfigure") else None
 
 import numpy as np
 import pandas as pd
@@ -85,22 +90,25 @@ def main() -> None:
     candidates = []
     scanned = 0
     t0 = time.time()
-    last_report = t0
 
     # Shuffle shard order for diversity, but iterate sequentially within each shard
     shard_order = rng.permutation(len(index.shards))
+    print(f"Starting scan of {len(shard_order)} shards...", flush=True)
 
     for si, shard_idx in enumerate(shard_order):
         if scanned >= args.candidate_scan or len(candidates) >= args.n_candidates:
             break
 
         shard = index.shards[int(shard_idx)]
+        shard_scanned = 0
+        shard_found = 0
 
         for metadata in iter_shard_metadata(shard.tar_path):
             if scanned >= args.candidate_scan or len(candidates) >= args.n_candidates:
                 break
 
             scanned += 1
+            shard_scanned += 1
             caption = metadata.get("caption", "")
             if not caption:
                 continue
@@ -120,16 +128,14 @@ def main() -> None:
                 "width": metadata.get("width", 0),
                 "height": metadata.get("height", 0),
             })
+            shard_found += 1
 
-        # Progress report every 30s
-        now = time.time()
-        if now - last_report > 30:
-            elapsed = now - t0
-            rate = scanned / elapsed
-            print(f"  [{si+1}/{len(shard_order)} shards] "
-                  f"Scanned {scanned:,} ({rate:,.0f}/s), "
-                  f"found {len(candidates):,} candidates")
-            last_report = now
+        elapsed = time.time() - t0
+        rate = scanned / max(1, elapsed)
+        print(f"  Shard {si+1}/{len(shard_order)}: "
+              f"+{shard_scanned} scanned, +{shard_found} found | "
+              f"Total: {scanned:,} scanned ({rate:,.0f}/s), "
+              f"{len(candidates):,} candidates", flush=True)
 
     elapsed = time.time() - t0
     rate = scanned / max(1, elapsed)
