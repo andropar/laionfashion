@@ -6,30 +6,30 @@ Usage (on Raven):
       /u/rothj/laionfashion/scripts/24_harvest_laion_urls.py \
       --candidate-scan 50000000 --n-candidates 500000
 
-This scans LAION-natural captions for fashion/outfit keywords, scores them,
-and exports a lightweight candidates.parquet with URLs and captions.
-No images are downloaded — that happens locally with 22_redownload_laion_urls.py.
+Scans LAION-natural tar shards SEQUENTIALLY (no random access) for speed.
+Reads only JSON metadata — never opens images. Exports candidates.parquet.
 
 Output: scripts/outputs/24_harvest_laion_urls/<timestamp>/candidates.parquet
 """
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
+import tarfile
 import time
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from laionfashion.config import load_data_paths
-from laionfashion.data_access import NaturalSubsetIndex, LaionTarReader
-from laionfashion.filtering import score_caption, SELECTION_MODES
+from laionfashion.data_access import NaturalSubsetIndex
+from laionfashion.filtering import score_caption
 from laionfashion.outputs import make_output_dir
 
 
@@ -47,6 +47,29 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def iter_shard_metadata(tar_path: Path):
+    """Iterate through all JSON metadata in a tar shard sequentially.
+
+    Yields dicts. Skips non-JSON members and malformed entries.
+    Much faster than random-access via LaionTarReader.
+    """
+    try:
+        with tarfile.open(tar_path, "r:*", ignore_zeros=True) as tf:
+            for member in tf:
+                if not member.name.endswith(".json"):
+                    continue
+                try:
+                    f = tf.extractfile(member)
+                    if f is None:
+                        continue
+                    data = json.load(f)
+                    yield data
+                except Exception:
+                    continue
+    except Exception:
+        return
+
+
 def main() -> None:
     args = parse_args()
     paths = load_data_paths()
@@ -55,72 +78,63 @@ def main() -> None:
 
     out_dir = make_output_dir(REPO_ROOT / "scripts" / "outputs" / "24_harvest_laion_urls")
     print(f"Output: {out_dir}")
-    print(f"Scanning {args.candidate_scan:,} captions, keeping up to {args.n_candidates:,} "
+    print(f"Scanning up to {args.candidate_scan:,} captions, keeping up to {args.n_candidates:,} "
           f"with score >= {args.min_score}")
-    print(f"Total shards available: {len(index.shards)}")
+    print(f"Total shards: {len(index.shards)}")
 
     candidates = []
     scanned = 0
-    metadata_errors = 0
+    t0 = time.time()
+    last_report = t0
 
+    # Shuffle shard order for diversity, but iterate sequentially within each shard
     shard_order = rng.permutation(len(index.shards))
 
-    with tqdm(total=args.candidate_scan, desc="Scanning captions") as pbar:
-        for shard_index in shard_order:
+    for si, shard_idx in enumerate(shard_order):
+        if scanned >= args.candidate_scan or len(candidates) >= args.n_candidates:
+            break
+
+        shard = index.shards[int(shard_idx)]
+
+        for metadata in iter_shard_metadata(shard.tar_path):
             if scanned >= args.candidate_scan or len(candidates) >= args.n_candidates:
                 break
 
-            shard = index.shards[int(shard_index)]
-            try:
-                with LaionTarReader(shard.tar_path) as reader:
-                    n_available = min(shard.n_images, len(reader))
-                    within_order = rng.permutation(n_available)
-
-                    for within_shard_index in within_order:
-                        if scanned >= args.candidate_scan or len(candidates) >= args.n_candidates:
-                            break
-
-                        scanned += 1
-                        pbar.update(1)
-
-                        try:
-                            metadata = reader.read_metadata(int(within_shard_index))
-                        except Exception:
-                            metadata_errors += 1
-                            continue
-
-                        caption = metadata.get("caption", "")
-                        if not caption:
-                            continue
-
-                        result = score_caption(caption)
-                        if result.score < args.min_score:
-                            continue
-
-                        url = metadata.get("url", "")
-                        if not url:
-                            continue
-
-                        candidates.append({
-                            "url": url,
-                            "caption": caption,
-                            "caption_score": float(result.score),
-                            "width": metadata.get("width", 0),
-                            "height": metadata.get("height", 0),
-                            "global_index": shard.start_index + int(within_shard_index),
-                        })
-
-                        if len(candidates) % 10000 == 0:
-                            elapsed = pbar.format_dict["elapsed"]
-                            print(f"  Found {len(candidates):,} candidates "
-                                  f"from {scanned:,} scanned")
-            except Exception as e:
-                # Skip unreadable shards
+            scanned += 1
+            caption = metadata.get("caption", "")
+            if not caption:
                 continue
 
-    print(f"\nScanned {scanned:,} captions")
-    print(f"Found {len(candidates):,} candidates with score >= {args.min_score}")
-    print(f"Metadata errors: {metadata_errors:,}")
+            result = score_caption(caption)
+            if result.score < args.min_score:
+                continue
+
+            url = metadata.get("url", "")
+            if not url:
+                continue
+
+            candidates.append({
+                "url": url,
+                "caption": caption,
+                "caption_score": float(result.score),
+                "width": metadata.get("width", 0),
+                "height": metadata.get("height", 0),
+            })
+
+        # Progress report every 30s
+        now = time.time()
+        if now - last_report > 30:
+            elapsed = now - t0
+            rate = scanned / elapsed
+            print(f"  [{si+1}/{len(shard_order)} shards] "
+                  f"Scanned {scanned:,} ({rate:,.0f}/s), "
+                  f"found {len(candidates):,} candidates")
+            last_report = now
+
+    elapsed = time.time() - t0
+    rate = scanned / max(1, elapsed)
+    print(f"\nDone in {elapsed:.0f}s ({rate:,.0f} captions/s)")
+    print(f"Scanned {scanned:,} captions, found {len(candidates):,} candidates")
 
     # Sort by caption score descending
     candidates.sort(key=lambda x: x["caption_score"], reverse=True)
@@ -128,13 +142,13 @@ def main() -> None:
     df = pd.DataFrame(candidates)
     df.to_parquet(out_dir / "candidates.parquet", index=False)
 
-    # Save summary
     summary = {
         "scanned": scanned,
         "n_candidates": len(candidates),
         "min_score": args.min_score,
         "candidate_scan": args.candidate_scan,
-        "metadata_errors": metadata_errors,
+        "elapsed_seconds": round(elapsed, 1),
+        "rate_per_second": round(rate, 1),
         "accept_rate": round(len(candidates) / max(1, scanned), 6),
         "score_distribution": {
             "mean": round(float(df["caption_score"].mean()), 3) if len(df) else 0,
@@ -142,17 +156,11 @@ def main() -> None:
             "p25": round(float(df["caption_score"].quantile(0.25)), 3) if len(df) else 0,
             "p75": round(float(df["caption_score"].quantile(0.75)), 3) if len(df) else 0,
         },
-        "urls_with_content": int(df["url"].str.len().gt(0).sum()) if len(df) else 0,
     }
     with open(out_dir / "summary.json", "w") as f:
         json.dump(summary, f, indent=2)
     print(json.dumps(summary, indent=2))
-
     print(f"\nSaved to {out_dir / 'candidates.parquet'}")
-    print(f"\nNext steps:")
-    print(f"  1. scp raven:{out_dir / 'candidates.parquet'} .")
-    print(f"  2. python scripts/22_redownload_laion_urls.py <bundle> <output> "
-          f"--candidates candidates.parquet")
 
 
 if __name__ == "__main__":
